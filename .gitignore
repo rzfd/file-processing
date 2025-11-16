@@ -1,11 +1,11 @@
-# Binaries
+# Binaries (compiled executables only, not source directories)
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-backend
-worker
+/backend-bin
+/worker-bin
 
 # Test binary, built with `go test -c`
 *.test
