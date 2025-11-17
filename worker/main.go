@@ -313,12 +313,6 @@ func (w *Worker) validateRecords(fileID int64, records []models.ProcessedRecord)
 	// You can customize these rules based on your business requirements
 	rules := []validator.ValidationRule{
 		{
-			Field:    "id",
-			Required: true,
-			DataType: "int",
-			MinValue: 1,
-		},
-		{
 			Field:     "name",
 			Required:  true,
 			DataType:  "string",
@@ -326,16 +320,10 @@ func (w *Worker) validateRecords(fileID int64, records []models.ProcessedRecord)
 			MaxLength: 100,
 		},
 		{
-			Field:    "email",
-			Required: false,
-			DataType: "email",
-		},
-		{
-			Field:    "age",
-			Required: false,
-			DataType: "int",
+			Field:    "nominal",
+			Required: true,
+			DataType: "float",
 			MinValue: 0,
-			MaxValue: 150,
 		},
 	}
 

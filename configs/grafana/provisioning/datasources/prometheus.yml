@@ -20,4 +20,7 @@ datasources:
     editable: true
     jsonData:
       maxLines: 1000
+      timeout: 60
+      queryTimeout: 60s
+    timeout: 60
 

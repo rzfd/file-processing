@@ -1,0 +1,57 @@
+# Custom queries for Postgres Exporter
+# This file can be used to define custom metrics queries
+
+# Example: Monitor file_metadata table statistics
+file_metadata_stats:
+  query: |
+    SELECT 
+      COUNT(*) as total_files,
+      SUM(CASE WHEN status = 'uploaded' THEN 1 ELSE 0 END) as uploaded_files,
+      SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing_files,
+      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_files,
+      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_files,
+      SUM(file_size) as total_size_bytes
+    FROM file_metadata;
+  master: true
+  metrics:
+    - total_files:
+        usage: "GAUGE"
+        description: "Total number of files"
+    - uploaded_files:
+        usage: "GAUGE"
+        description: "Number of uploaded files"
+    - processing_files:
+        usage: "GAUGE"
+        description: "Number of files being processed"
+    - completed_files:
+        usage: "GAUGE"
+        description: "Number of completed files"
+    - failed_files:
+        usage: "GAUGE"
+        description: "Number of failed files"
+    - total_size_bytes:
+        usage: "GAUGE"
+        description: "Total size of all files in bytes"
+
+# Example: Monitor file processing by type
+file_processing_by_type:
+  query: |
+    SELECT 
+      file_type,
+      COUNT(*) as count,
+      AVG(EXTRACT(EPOCH FROM (completed_at - created_at))) as avg_processing_time_seconds
+    FROM file_metadata
+    WHERE completed_at IS NOT NULL
+    GROUP BY file_type;
+  master: true
+  metrics:
+    - file_type:
+        usage: "LABEL"
+        description: "Type of file"
+    - count:
+        usage: "GAUGE"
+        description: "Number of files of this type"
+    - avg_processing_time_seconds:
+        usage: "GAUGE"
+        description: "Average processing time in seconds"
+

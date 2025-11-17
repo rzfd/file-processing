@@ -180,7 +180,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: fluent-bit:24224
         tag: backend
         fluentd-async: "true"
     environment:
@@ -222,7 +222,7 @@ services:
     logging:
       driver: fluentd
       options:
-        fluentd-address: localhost:24224
+        fluentd-address: fluent-bit:24224
         tag: worker
         fluentd-async: "true"
     environment:
@@ -250,6 +250,24 @@ services:
       minio:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Postgres Exporter
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: file-processing-postgres-exporter
+    ports:
+      - "9187:9187"
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:postgres@postgres:5432/fileprocessing?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: "/etc/postgres_exporter/postgres_exporter.yml"
+    volumes:
+      - ./configs/postgres/postgres_exporter.yml:/etc/postgres_exporter/postgres_exporter.yml:ro
+    networks:
+      - file-processing-network
+    depends_on:
+      postgres:
         condition: service_healthy
     restart: unless-stopped
 

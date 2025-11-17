@@ -102,3 +102,9 @@ grafana: ## Open Grafana dashboard
 	@echo "Password: admin"
 	@command -v xdg-open > /dev/null && xdg-open http://localhost:3000 || open http://localhost:3000 || echo "Please open http://localhost:3000 manually"
 
+postgres-exporter: ## Start postgres exporter
+	docker-compose up -d postgres-exporter
+
+metrics-postgres: ## Show postgres exporter metrics
+	@curl http://localhost:9187/metrics
+
