@@ -1,33 +1,26 @@
 # 🚀 File Processing Pipeline System
 
-Sistem microservices untuk memproses file CSV/XLSX dengan arsitektur event-driven menggunakan Go, MinIO, PostgreSQL, Kafka, Prometheus, Grafana, Loki, dan Fluent Bit.
+Sistem microservices untuk memproses file CSV/XLSX dengan arsitektur event-driven.
 
 ## 📋 Daftar Isi
 
 - [Fitur](#-fitur)
 - [Arsitektur](#-arsitektur)
-- [Teknologi](#-teknologi)
-- [Prasyarat](#-prasyarat)
-- [Instalasi](#-instalasi)
-- [Penggunaan](#-penggunaan)
+- [Quick Start](#-quick-start)
 - [API Endpoints](#-api-endpoints)
-- [Monitoring](#-monitoring)
-- [Logging](#-logging)
+- [Monitoring & Logging](#-monitoring--logging)
 - [Troubleshooting](#-troubleshooting)
 
 ## ✨ Fitur
 
-- ✅ Upload file CSV/XLSX via REST API
-- ✅ Penyimpanan file di MinIO (S3-compatible)
-- ✅ Event-driven processing dengan Kafka
+- ✅ Upload & process file CSV/XLSX via REST API
+- ✅ Event-driven architecture dengan Kafka
+- ✅ Object storage dengan MinIO (S3-compatible)
 - ✅ Batch processing untuk performa optimal
-- ✅ Metadata tracking di PostgreSQL
+- ✅ Structured logging dengan Zerolog (JSON format)
 - ✅ Monitoring dengan Prometheus & Grafana
 - ✅ Centralized logging dengan Loki & Fluent Bit
-- ✅ **Structured logging dengan Zerolog (INF, WRN, ERR, DBG)**
-- ✅ Health checks untuk semua services
-- ✅ Auto-retry mechanism
-- ✅ Horizontal scalability
+- ✅ Distributed tracing dengan trace_id
 
 ## 🏗️ Arsitektur
 
@@ -62,259 +55,137 @@ Sistem microservices untuk memproses file CSV/XLSX dengan arsitektur event-drive
 └────────────────────────────────────────────────────┘
 ```
 
-## 🛠️ Teknologi
+## 🛠️ Tech Stack
 
-- **Backend**: Go 1.24 + Zerolog
-- **Storage**: MinIO (S3-compatible)
-- **Database**: PostgreSQL 15
-- **Message Broker**: Apache Kafka + Zookeeper
-- **Monitoring**: Prometheus + Grafana
-- **Logging**: Loki + Fluent Bit + Zerolog
-- **Containerization**: Docker + Docker Compose
+| Component | Technology |
+|-----------|------------|
+| **Backend** | Go 1.24 + Zerolog |
+| **Storage** | MinIO (S3-compatible) |
+| **Database** | PostgreSQL 15 |
+| **Message Broker** | Apache Kafka |
+| **Monitoring** | Prometheus + Grafana |
+| **Logging** | Loki + Fluent Bit |
+| **Container** | Docker Compose |
 
-## 📦 Prasyarat
+## 🚀 Quick Start
 
+### Prasyarat
 - Docker 20.10+
 - Docker Compose 2.0+
 - 4GB RAM minimum
-- 10GB disk space
 
-## 🚀 Instalasi
-
-### 1. Clone Repository
+### Start Services
 
 ```bash
-git clone <repository-url>
-cd file-processing-system
-```
-
-### 2. Start All Services
-
-```bash
-# Start semua services
 docker-compose up -d
-
-# Check status
-docker-compose ps
-
-# View logs
-docker-compose logs -f
 ```
 
-### 3. Verify Services
+### Access Services
 
-```bash
-# Backend health
-curl http://localhost:8080/health
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| **Backend API** | http://localhost:8080 | - |
+| **Grafana** | http://localhost:3000 | admin/admin |
+| **MinIO Console** | http://localhost:9001 | minioadmin/minioadmin |
+| **Prometheus** | http://localhost:9090 | - |
 
-# MinIO console
-open http://localhost:9001
-# User: minioadmin, Password: minioadmin
-
-# Grafana dashboard
-open http://localhost:3000
-# User: admin, Password: admin
-
-# Prometheus
-open http://localhost:9090
-```
-
-## 💻 Penggunaan
+## 💻 Usage
 
 ### Upload File
 
 ```bash
-# Upload CSV file
-curl -X POST http://localhost:8080/upload \
-  -F "file=@data.csv" \
-  -F "filename=data.csv"
+# Upload CSV/XLSX file
+curl -X POST http://localhost:8080/upload -F "file=@data.csv"
 
-# Response
-{
-  "id": 1,
-  "file_name": "data.csv",
-  "status": "pending"
-}
-```
+# Check file status
+curl http://localhost:8080/files/1
 
-### Check File Status
-
-```bash
-# Get specific file status
-curl http://localhost:8080/files/1 | jq .
-
-# Response
-{
-  "id": 1,
-  "file_name": "data.csv",
-  "file_size": 1024,
-  "content_type": "text/csv",
-  "status": "completed",
-  "record_count": 100,
-  "created_at": "2025-11-16T10:00:00Z",
-  "processed_at": "2025-11-16T10:00:05Z"
-}
-```
-
-### List Files
-
-```bash
-# List all files (default limit: 10)
-curl http://localhost:8080/files | jq .
-
-# List with filters
-curl "http://localhost:8080/files?status=completed&limit=20" | jq .
-
-# Response
-{
-  "files": [...],
-  "count": 10
-}
+# List all files
+curl http://localhost:8080/files?status=completed&limit=10
 ```
 
 ## 📡 API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| POST | `/upload` | Upload file |
-| GET | `/files` | List files |
-| GET | `/files/{id}` | Get file status |
-| GET | `/metrics` | Prometheus metrics |
+| Method | Endpoint | Description | Query Params |
+|--------|----------|-------------|--------------|
+| GET | `/health` | Health check | - |
+| POST | `/upload` | Upload file | - |
+| GET | `/files` | List files | `status`, `limit` |
+| GET | `/files/{id}` | Get file status | - |
+| GET | `/metrics` | Prometheus metrics | - |
 
-### Query Parameters
+## 📊 Monitoring & Logging
 
-**GET /files**
-- `status` - Filter by status (pending, processing, completed, failed)
-- `limit` - Limit results (1-100, default: 10)
+### Grafana (http://localhost:3000)
 
-## 📊 Monitoring
+**Metrics Dashboard:**
+- HTTP request rate & latency (p50, p90, p99)
+- Files processed (total & rate)
+- Records processed (total & rate)
+- Processing duration
 
-### Grafana Dashboards
+**Logs Dashboard (Loki):**
 
-Akses: http://localhost:3000 (admin/admin)
-
-**Metrics Dashboard** sudah include:
-- HTTP Request Rate & Count
-- Files Processed (Total & Rate)
-- Records Processed (Total & Rate)
-- Request Duration (p50, p90, p99)
-- Processing Duration (p50, p90, p99)
-
-**Logs Dashboard** (Loki):
-- Upload activity logs
-- Worker processing logs
-- Error logs
-- Database operations
-
-### Prometheus Metrics
-
-Akses: http://localhost:9090
-
-Available metrics:
-- `http_requests_total` - Total HTTP requests
-- `http_request_duration_seconds` - Request duration
-- `processed_files_total` - Total files processed
-- `processed_records_total` - Total records processed
-- `file_processing_duration_seconds` - Processing duration
-
-### Loki Logs dengan Zerolog Levels
-
-Query logs di Grafana Explore dengan LogQL:
+Query examples dengan LogQL:
 
 ```logql
-# INFO logs
-{job="fluentbit"} |= "INF"
+# Filter by service
+{job="fluentbit", service_name="backend"}
+{job="fluentbit", service_name="worker"}
 
-# ERROR logs
-{job="fluentbit"} |= "ERR"
+# Filter by log level
+{job="fluentbit", detected_level="error"}
+{job="fluentbit", detected_level="warn"}
 
-# WARNING logs
-{job="fluentbit"} |= "WRN"
+# Search by content
+{job="fluentbit"} | json | message =~ "(?i)upload"
 
-# DEBUG logs
-{job="fluentbit"} |= "DBG"
+# Track specific file
+{job="fluentbit"} | json | file_id=21
 
-# Backend errors
-{job="fluentbit", container_name="/file-processing-backend"} |= "ERR"
-
-# Worker info logs
-{job="fluentbit", container_name="/file-processing-worker"} |= "INF"
+# End-to-end tracing
+{job="fluentbit"} | json | trace_id="..."
 ```
 
-Lihat [GRAFANA_QUERIES.md](GRAFANA_QUERIES.md) untuk query lengkap.
+### Available Labels
+- `job` - fluentbit
+- `service_name` - backend / worker
+- `detected_level` - info / warn / error
 
-## 📝 Logging
+### Available Fields (access with `| json`)
+- `level`, `message`, `time`
+- `request_id`, `trace_id`
+- `file_id`, `filename`
+- All structured log fields
 
-Sistem menggunakan **Zerolog** untuk structured logging dengan level:
+### Prometheus Metrics (http://localhost:9090)
 
-- **INF** (INFO) - Informasi normal operasi
-- **WRN** (WARN) - Warning yang perlu diperhatikan
-- **ERR** (ERROR) - Error yang terjadi
-- **DBG** (DEBUG) - Debug information
-- **FTL** (FATAL) - Fatal error (app stops)
+| Metric | Description |
+|--------|-------------|
+| `http_requests_total` | Total HTTP requests |
+| `http_request_duration_seconds` | Request latency |
+| `processed_files_total` | Total files processed |
+| `processed_records_total` | Total records processed |
+| `file_processing_duration_seconds` | Processing duration |
 
-Format log:
-```
-[timestamp] [LEVEL] [message] [key=value]
-```
-
-Contoh:
-```
-2025-11-16T15:54:08Z INF Backend server starting port=8080
-2025-11-16T15:54:08Z ERR Failed to connect error="connection refused"
-```
+## 🔧 Troubleshooting
 
 ### View Logs
 
 ```bash
-# All logs
+# All services
 docker-compose logs -f
 
 # Specific service
 docker-compose logs -f backend
 docker-compose logs -f worker
-
-# Filter by level
-docker logs file-processing-backend | grep "INF"
-docker logs file-processing-backend | grep "ERR"
-docker logs file-processing-worker | grep "WRN"
 ```
 
-Lihat [ZEROLOG_GUIDE.md](ZEROLOG_GUIDE.md) untuk dokumentasi lengkap.
-
-## 🧪 Testing
-
-### Test Upload
+### Restart Services
 
 ```bash
-# Run test script
-./scripts/test-upload.sh
-```
-
-### Manual Test
-
-```bash
-# Create test CSV
-cat > test.csv << EOF
-id,name,email,age
-1,John Doe,john@example.com,30
-2,Jane Smith,jane@example.com,25
-EOF
-
-# Upload
-curl -X POST http://localhost:8080/upload \
-  -F "file=@test.csv" \
-  -F "filename=test.csv"
-```
-
-## 🔧 Troubleshooting
-
-### Services Not Starting
-
-```bash
-# Check logs
-docker-compose logs
+# Restart all
+docker-compose restart
 
 # Restart specific service
 docker-compose restart backend
@@ -323,116 +194,48 @@ docker-compose restart backend
 docker-compose up -d --build
 ```
 
-### Database Connection Issues
+### Common Issues
 
+**Services not starting:**
 ```bash
-# Check PostgreSQL
-docker-compose logs postgres
-
-# Connect to database
-docker-compose exec postgres psql -U postgres -d fileprocessing
-
-# Check tables
-\dt
+docker-compose down && docker-compose up -d
 ```
 
-### Kafka Issues
-
+**Database issues:**
 ```bash
-# Check Kafka logs
-docker-compose logs kafka
+docker-compose exec postgres psql -U postgres -d fileprocessing
+```
 
-# Check Zookeeper
-docker-compose logs zookeeper
-
-# List topics
+**Check Kafka topics:**
+```bash
 docker-compose exec kafka kafka-topics --list --bootstrap-server localhost:9092
 ```
 
-### MinIO Issues
+### Stop Services
 
 ```bash
-# Check MinIO logs
-docker-compose logs minio
-
-# Access MinIO console
-open http://localhost:9001
-```
-
-### Loki/Fluent Bit Issues
-
-```bash
-# Check Loki
-curl http://localhost:3100/ready
-
-# Check Fluent Bit
-curl http://localhost:2020/api/v1/health
-
-# View logs
-docker-compose logs loki
-docker-compose logs fluent-bit
-```
-
-## 🛑 Stopping Services
-
-```bash
-# Stop all services
+# Stop all
 docker-compose down
 
 # Stop and remove volumes
 docker-compose down -v
-
-# Stop specific service
-docker-compose stop backend
 ```
-
-## 📚 Additional Documentation
-
-- [ZEROLOG_GUIDE.md](ZEROLOG_GUIDE.md) - Zerolog structured logging guide
-- [GRAFANA_QUERIES.md](GRAFANA_QUERIES.md) - Grafana Loki query examples
-- [Makefile](Makefile) - Convenient commands
-
-## 🔗 Service URLs
-
-| Service | URL | Credentials |
-|---------|-----|-------------|
-| Backend API | http://localhost:8080 | - |
-| Grafana | http://localhost:3000 | admin/admin |
-| Prometheus | http://localhost:9090 | - |
-| MinIO Console | http://localhost:9001 | minioadmin/minioadmin |
-| MinIO API | http://localhost:9000 | - |
-| Loki | http://localhost:3100 | - |
-| Fluent Bit | http://localhost:2020 | - |
-| PostgreSQL | localhost:5432 | postgres/postgres |
-| Kafka | localhost:9092 | - |
-
-## 📈 Performance
-
-- **Throughput**: ~1000 records/second
-- **Batch Size**: 1000 records per batch
-- **Max File Size**: Unlimited (configurable)
-- **Concurrent Workers**: Scalable (default: 1)
-
-## 🔐 Security Notes
-
-⚠️ **Production Considerations**:
-- Change default passwords
-- Enable TLS/SSL
-- Implement authentication
-- Set up network policies
-- Configure firewall rules
-- Enable audit logging
-- Implement rate limiting
-
-## 📄 License
-
-MIT License
-
-## 👥 Contributors
-
-- Your Name
 
 ---
 
-**Need Help?** Check the troubleshooting section or open an issue.
+## 📝 Notes
+
+**Performance:**
+- Throughput: ~1000 records/second
+- Batch size: 1000 records per batch
+- Supports horizontal scaling
+
+**Security (Production):**
+- ⚠️ Change default passwords
+- ⚠️ Enable TLS/SSL
+- ⚠️ Implement authentication & authorization
+
+---
+
+**Need Help?** Check logs atau open an issue.
 
