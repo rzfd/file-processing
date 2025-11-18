@@ -7,6 +7,7 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/rs/zerolog/log"
 	"github.com/rzfd/file-processing-system/internal/config"
 )
 
@@ -17,8 +18,11 @@ type Client struct {
 
 // NewClient creates a new MinIO client
 func NewClient(cfg *config.Config) (*Client, error) {
-	fmt.Printf("[MINIO] Connecting to MinIO at %s\n", cfg.MinIOEndpoint)
-	fmt.Printf("[MINIO] Bucket: %s, SSL: %v\n", cfg.MinIOBucketName, cfg.MinIOUseSSL)
+	log.Info().
+		Str("endpoint", cfg.MinIOEndpoint).
+		Str("bucket", cfg.MinIOBucketName).
+		Bool("ssl", cfg.MinIOUseSSL).
+		Msg("Connecting to MinIO")
 
 	minioClient, err := minio.New(cfg.MinIOEndpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.MinIOAccessKeyID, cfg.MinIOSecretAccessKey, ""),
@@ -35,37 +39,52 @@ func NewClient(cfg *config.Config) (*Client, error) {
 
 	// Ensure bucket exists
 	ctx := context.Background()
-	fmt.Printf("[MINIO] Checking if bucket '%s' exists...\n", cfg.MinIOBucketName)
+	log.Info().
+		Str("bucket", cfg.MinIOBucketName).
+		Msg("Checking if bucket exists")
 	exists, err := minioClient.BucketExists(ctx, cfg.MinIOBucketName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check bucket existence: %w", err)
 	}
 
 	if !exists {
-		fmt.Printf("[MINIO] Bucket does not exist, creating...\n")
+		log.Info().
+			Str("bucket", cfg.MinIOBucketName).
+			Msg("Bucket does not exist, creating")
 		err = minioClient.MakeBucket(ctx, cfg.MinIOBucketName, minio.MakeBucketOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create bucket: %w", err)
 		}
-		fmt.Printf("[MINIO] Bucket '%s' created successfully\n", cfg.MinIOBucketName)
+		log.Info().
+			Str("bucket", cfg.MinIOBucketName).
+			Msg("Bucket created successfully")
 	} else {
-		fmt.Printf("[MINIO] Bucket '%s' already exists\n", cfg.MinIOBucketName)
+		log.Info().
+			Str("bucket", cfg.MinIOBucketName).
+			Msg("Bucket already exists")
 	}
 
-	fmt.Printf("[MINIO] Client initialized successfully\n")
+	log.Info().Msg("MinIO client initialized successfully")
 	return client, nil
 }
 
 // UploadFile uploads a file to MinIO
 func (c *Client) UploadFile(ctx context.Context, objectName string, reader io.Reader, size int64, contentType string) error {
-	fmt.Printf("[MINIO] Uploading object: %s (size: %d bytes, type: %s)\n", objectName, size, contentType)
+	log.Info().
+		Str("object", objectName).
+		Int64("size", size).
+		Str("content_type", contentType).
+		Msg("Uploading object to MinIO")
 
 	info, err := c.client.PutObject(ctx, c.bucketName, objectName, reader, size, minio.PutObjectOptions{
 		ContentType: contentType,
 	})
 
 	if err == nil {
-		fmt.Printf("[MINIO] Upload successful: %s (%d bytes)\n", objectName, info.Size)
+		log.Info().
+			Str("object", objectName).
+			Int64("size", info.Size).
+			Msg("Upload successful")
 	}
 
 	return err
@@ -73,14 +92,19 @@ func (c *Client) UploadFile(ctx context.Context, objectName string, reader io.Re
 
 // DownloadFile downloads a file from MinIO
 func (c *Client) DownloadFile(ctx context.Context, objectName string) (io.ReadCloser, error) {
-	fmt.Printf("[MINIO] Downloading object: %s from bucket: %s\n", objectName, c.bucketName)
+	log.Info().
+		Str("object", objectName).
+		Str("bucket", c.bucketName).
+		Msg("Downloading object from MinIO")
 
 	obj, err := c.client.GetObject(ctx, c.bucketName, objectName, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get object: %w", err)
 	}
 
-	fmt.Printf("[MINIO] Download initiated successfully\n")
+	log.Info().
+		Str("object", objectName).
+		Msg("Download initiated successfully")
 	return obj, nil
 }
 

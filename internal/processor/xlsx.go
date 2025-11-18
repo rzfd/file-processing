@@ -6,20 +6,23 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/rs/zerolog/log"
 	"github.com/rzfd/file-processing-system/internal/models"
 	"github.com/xuri/excelize/v2"
 )
 
 // ProcessXLSX processes an XLSX file and returns processed records
 func ProcessXLSX(reader io.Reader) ([]models.ProcessedRecord, error) {
-	fmt.Printf("[PROCESSOR] Starting XLSX processing\n")
+	log.Info().Msg("Starting XLSX processing")
 
 	// Read all data from reader
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read XLSX data: %w", err)
 	}
-	fmt.Printf("[PROCESSOR] Read %d bytes from XLSX file\n", len(data))
+	log.Info().
+		Int("bytes", len(data)).
+		Msg("Read XLSX file data")
 
 	// Open Excel file
 	f, err := excelize.OpenReader(bytes.NewReader(data))
@@ -33,7 +36,9 @@ func ProcessXLSX(reader io.Reader) ([]models.ProcessedRecord, error) {
 	if sheetName == "" {
 		return nil, fmt.Errorf("no sheets found in XLSX file")
 	}
-	fmt.Printf("[PROCESSOR] Processing sheet: %s\n", sheetName)
+	log.Info().
+		Str("sheet", sheetName).
+		Msg("Processing sheet")
 
 	rows, err := f.GetRows(sheetName)
 	if err != nil {
@@ -46,7 +51,9 @@ func ProcessXLSX(reader io.Reader) ([]models.ProcessedRecord, error) {
 
 	// First row is header
 	headers := rows[0]
-	fmt.Printf("[PROCESSOR] XLSX headers: %v\n", headers)
+	log.Info().
+		Strs("headers", headers).
+		Msg("XLSX headers parsed")
 	var records []models.ProcessedRecord
 
 	for i := 1; i < len(rows); i++ {
@@ -72,6 +79,8 @@ func ProcessXLSX(reader io.Reader) ([]models.ProcessedRecord, error) {
 		})
 	}
 
-	fmt.Printf("[PROCESSOR] XLSX processing completed: %d records parsed\n", len(records))
+	log.Info().
+		Int("record_count", len(records)).
+		Msg("XLSX processing completed")
 	return records, nil
 }

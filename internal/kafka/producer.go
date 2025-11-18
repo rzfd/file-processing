@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/IBM/sarama"
+	"github.com/rs/zerolog/log"
 	"github.com/rzfd/file-processing-system/internal/config"
 	"github.com/rzfd/file-processing-system/internal/models"
 )
@@ -16,8 +17,10 @@ type Producer struct {
 
 // NewProducer creates a new Kafka producer
 func NewProducer(cfg *config.Config) (*Producer, error) {
-	fmt.Printf("[KAFKA] Creating producer for brokers: %v\n", cfg.KafkaBrokers)
-	fmt.Printf("[KAFKA] Topic: %s\n", cfg.KafkaTopic)
+	log.Info().
+		Strs("brokers", cfg.KafkaBrokers).
+		Str("topic", cfg.KafkaTopic).
+		Msg("Creating Kafka producer")
 
 	config := sarama.NewConfig()
 	config.Producer.Return.Successes = true
@@ -29,7 +32,7 @@ func NewProducer(cfg *config.Config) (*Producer, error) {
 		return nil, fmt.Errorf("failed to create kafka producer: %w", err)
 	}
 
-	fmt.Printf("[KAFKA] Producer created successfully\n")
+	log.Info().Msg("Kafka producer created successfully")
 
 	return &Producer{
 		producer: producer,
@@ -39,8 +42,11 @@ func NewProducer(cfg *config.Config) (*Producer, error) {
 
 // PublishFileEvent publishes a file processing event to Kafka
 func (p *Producer) PublishFileEvent(event *models.FileProcessingEvent) error {
-	fmt.Printf("[KAFKA] Publishing event: FileID=%d, FileName=%s, EventType=%s\n",
-		event.FileID, event.FileName, event.EventType)
+	log.Info().
+		Int64("file_id", event.FileID).
+		Str("filename", event.FileName).
+		Str("event_type", event.EventType).
+		Msg("Publishing event to Kafka")
 
 	eventJSON, err := json.Marshal(event)
 	if err != nil {
@@ -57,7 +63,11 @@ func (p *Producer) PublishFileEvent(event *models.FileProcessingEvent) error {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 
-	fmt.Printf("[KAFKA] Message sent successfully to partition %d at offset %d\n", partition, offset)
+	log.Info().
+		Int32("partition", partition).
+		Int64("offset", offset).
+		Int64("file_id", event.FileID).
+		Msg("Message sent successfully to Kafka")
 	return nil
 }
 

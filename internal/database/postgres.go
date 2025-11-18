@@ -7,6 +7,7 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/rs/zerolog/log"
 	"github.com/rzfd/file-processing-system/internal/config"
 	"github.com/rzfd/file-processing-system/internal/models"
 )
@@ -17,24 +18,28 @@ type DB struct {
 
 // NewDB creates a new database connection
 func NewDB(cfg *config.Config) (*DB, error) {
-	fmt.Printf("[DATABASE] Connecting to PostgreSQL at %s:%s\n", cfg.DBHost, cfg.DBPort)
+	log.Info().
+		Str("host", cfg.DBHost).
+		Str("port", cfg.DBPort).
+		Msg("Connecting to PostgreSQL")
+	
 	conn, err := sql.Open("postgres", cfg.GetDSN())
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	fmt.Printf("[DATABASE] Pinging database...\n")
+	log.Info().Msg("Pinging database")
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
-	fmt.Printf("[DATABASE] Connection established successfully\n")
+	log.Info().Msg("Database connection established successfully")
 
 	db := &DB{conn: conn}
-	fmt.Printf("[DATABASE] Running migrations...\n")
+	log.Info().Msg("Running database migrations")
 	if err := db.migrate(); err != nil {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
-	fmt.Printf("[DATABASE] Migrations completed successfully\n")
+	log.Info().Msg("Database migrations completed successfully")
 
 	return db, nil
 }
@@ -93,8 +98,11 @@ func (db *DB) CreateFileMetadata(file *models.FileMetadata) error {
 	).Scan(&file.ID)
 
 	if err == nil {
-		fmt.Printf("[DATABASE] Created file metadata: ID=%d, Name=%s, Size=%d\n",
-			file.ID, file.FileName, file.FileSize)
+		log.Info().
+			Int64("file_id", file.ID).
+			Str("filename", file.FileName).
+			Int64("size", file.FileSize).
+			Msg("Created file metadata")
 	}
 
 	return err
@@ -105,7 +113,10 @@ func (db *DB) UpdateFileStatus(fileID int64, status string) error {
 	query := `UPDATE file_metadata SET status = $1, updated_at = $2 WHERE id = $3`
 	_, err := db.conn.Exec(query, status, time.Now(), fileID)
 	if err == nil {
-		fmt.Printf("[DATABASE] Updated file status: ID=%d, Status=%s\n", fileID, status)
+		log.Info().
+			Int64("file_id", fileID).
+			Str("status", status).
+			Msg("Updated file status")
 	}
 	return err
 }
@@ -123,7 +134,10 @@ func (db *DB) BatchInsertProcessedRecords(fileID int64, records []models.Process
 		return nil
 	}
 
-	fmt.Printf("[DATABASE] Starting batch insert: FileID=%d, Records=%d\n", fileID, len(records))
+	log.Info().
+		Int64("file_id", fileID).
+		Int("record_count", len(records)).
+		Msg("Starting batch insert")
 
 	tx, err := db.conn.Begin()
 	if err != nil {
@@ -153,7 +167,10 @@ func (db *DB) BatchInsertProcessedRecords(fileID int64, records []models.Process
 		return err
 	}
 
-	fmt.Printf("[DATABASE] Batch insert completed: %d records inserted\n", len(records))
+	log.Info().
+		Int64("file_id", fileID).
+		Int("records_inserted", len(records)).
+		Msg("Batch insert completed")
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/IBM/sarama"
+	"github.com/rs/zerolog/log"
 	"github.com/rzfd/file-processing-system/internal/config"
 	"github.com/rzfd/file-processing-system/internal/models"
 )
@@ -17,9 +18,11 @@ type Consumer struct {
 
 // NewConsumer creates a new Kafka consumer
 func NewConsumer(cfg *config.Config) (*Consumer, error) {
-	fmt.Printf("[KAFKA] Creating consumer for brokers: %v\n", cfg.KafkaBrokers)
-	fmt.Printf("[KAFKA] Consumer Group: %s\n", cfg.KafkaConsumerGroup)
-	fmt.Printf("[KAFKA] Topic: %s\n", cfg.KafkaTopic)
+	log.Info().
+		Strs("brokers", cfg.KafkaBrokers).
+		Str("consumer_group", cfg.KafkaConsumerGroup).
+		Str("topic", cfg.KafkaTopic).
+		Msg("Creating Kafka consumer")
 
 	config := sarama.NewConfig()
 	config.Consumer.Group.Rebalance.Strategy = sarama.NewBalanceStrategyRoundRobin()
@@ -30,7 +33,7 @@ func NewConsumer(cfg *config.Config) (*Consumer, error) {
 		return nil, fmt.Errorf("failed to create kafka consumer: %w", err)
 	}
 
-	fmt.Printf("[KAFKA] Consumer created successfully\n")
+	log.Info().Msg("Kafka consumer created successfully")
 
 	return &Consumer{
 		consumer: consumer,
@@ -67,25 +70,37 @@ func (h *consumerGroupHandler) Cleanup(sarama.ConsumerGroupSession) error { retu
 
 func (h *consumerGroupHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for message := range claim.Messages() {
-		fmt.Printf("[KAFKA] Received message from partition %d at offset %d\n",
-			message.Partition, message.Offset)
+		log.Info().
+			Int32("partition", message.Partition).
+			Int64("offset", message.Offset).
+			Msg("Received message from Kafka")
 
 		var event models.FileProcessingEvent
 		if err := json.Unmarshal(message.Value, &event); err != nil {
-			fmt.Printf("[KAFKA] ERROR: Failed to unmarshal message: %v\n", err)
+			log.Error().
+				Err(err).
+				Msg("Failed to unmarshal Kafka message")
 			session.MarkMessage(message, "")
 			continue
 		}
 
-		fmt.Printf("[KAFKA] Processing event: FileID=%d, FileName=%s\n", event.FileID, event.FileName)
+		log.Info().
+			Int64("file_id", event.FileID).
+			Str("filename", event.FileName).
+			Msg("Processing event")
 
 		if err := h.handler(&event); err != nil {
-			fmt.Printf("[KAFKA] ERROR: Failed to process message: %v\n", err)
+			log.Error().
+				Err(err).
+				Int64("file_id", event.FileID).
+				Msg("Failed to process message")
 			// Don't mark as processed if there's an error
 			continue
 		}
 
-		fmt.Printf("[KAFKA] Message processed successfully, marking as consumed\n")
+		log.Info().
+			Int64("file_id", event.FileID).
+			Msg("Message processed successfully, marking as consumed")
 		session.MarkMessage(message, "")
 	}
 	return nil

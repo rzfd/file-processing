@@ -6,12 +6,13 @@ import (
 	"io"
 	"strconv"
 
+	"github.com/rs/zerolog/log"
 	"github.com/rzfd/file-processing-system/internal/models"
 )
 
 // ProcessCSV processes a CSV file and returns processed records
 func ProcessCSV(reader io.Reader) ([]models.ProcessedRecord, error) {
-	fmt.Printf("[PROCESSOR] Starting CSV processing\n")
+	log.Info().Msg("Starting CSV processing")
 	csvReader := csv.NewReader(reader)
 
 	// Read header
@@ -19,7 +20,9 @@ func ProcessCSV(reader io.Reader) ([]models.ProcessedRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read CSV header: %w", err)
 	}
-	fmt.Printf("[PROCESSOR] CSV headers: %v\n", headers)
+	log.Info().
+		Strs("headers", headers).
+		Msg("CSV headers parsed")
 
 	var records []models.ProcessedRecord
 	rowNumber := 1
@@ -56,6 +59,8 @@ func ProcessCSV(reader io.Reader) ([]models.ProcessedRecord, error) {
 		rowNumber++
 	}
 
-	fmt.Printf("[PROCESSOR] CSV processing completed: %d records parsed\n", len(records))
+	log.Info().
+		Int("record_count", len(records)).
+		Msg("CSV processing completed")
 	return records, nil
 }
