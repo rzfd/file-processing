@@ -131,24 +131,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # Fluent Bit
-  fluent-bit:
-    image: fluent/fluent-bit:latest
-    container_name: file-processing-fluent-bit
-    ports:
-      - "2020:2020"
-      - "24224:24224"
-    volumes:
-      - ./configs/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
-      - ./configs/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf
-      - ./configs/fluent-bit/custom_parsers.conf:/fluent-bit/etc/custom_parsers.conf
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - file-processing-network
-    depends_on:
-      - loki
-
   # Grafana
   grafana:
     image: grafana/grafana:latest
@@ -177,12 +159,6 @@ services:
     ports:
       - "8080:8080"
       - "2112:2112"
-    logging:
-      driver: fluentd
-      options:
-        fluentd-address: fluent-bit:24224
-        tag: backend
-        fluentd-async: "true"
     environment:
       PORT: "8080"
       METRICS_PORT: "2112"
@@ -219,12 +195,6 @@ services:
     container_name: file-processing-worker
     ports:
       - "2113:2112"
-    logging:
-      driver: fluentd
-      options:
-        fluentd-address: fluent-bit:24224
-        tag: worker
-        fluentd-async: "true"
     environment:
       METRICS_PORT: "2112"
       DB_HOST: postgres

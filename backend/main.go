@@ -54,27 +54,23 @@ type Server struct {
 }
 
 func main() {
-	// Setup logger
 	logger.InitLogger()
 
 	cfg := config.LoadConfig()
 
 	log.Info().Msg("🚀 Starting Backend Service")
 
-	// Initialize database
 	db, err := database.NewDB(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize database")
 	}
 	defer db.Close()
 
-	// Initialize MinIO
 	minioClient, err := minio.NewClient(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize MinIO")
 	}
 
-	// Initialize Kafka producer
 	kafkaProducer, err := kafka.NewProducer(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize Kafka producer")
@@ -91,7 +87,6 @@ func main() {
 
 	server.setupRoutes()
 
-	// Start metrics server
 	go func() {
 		metricsMux := http.NewServeMux()
 		metricsMux.Handle("/metrics", promhttp.Handler())
