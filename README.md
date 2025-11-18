@@ -86,6 +86,7 @@ docker-compose up -d
 |---------|-----|-------------|
 | **Backend API** | http://localhost:8080 | - |
 | **Grafana** | http://localhost:3000 | admin/admin |
+| **pgAdmin** | http://localhost:5050 | admin@admin.com/admin |
 | **MinIO Console** | http://localhost:9001 | minioadmin/minioadmin |
 | **Prometheus** | http://localhost:9090 | - |
 
@@ -118,11 +119,17 @@ curl http://localhost:8080/files?status=completed&limit=10
 
 ### Grafana (http://localhost:3000)
 
-**Metrics Dashboard:**
-- HTTP request rate & latency (p50, p90, p99)
-- Files processed (total & rate)
-- Records processed (total & rate)
-- Processing duration
+**📊 Pre-built Dashboards:**
+
+1. **File Processing System - Overview**
+   - URL: http://localhost:3000/d/file-processing-overview
+   - Total files, completed, failed statistics
+   - Success rate gauge
+   - Files by status (pie chart)
+   - HTTP request rate
+   - Processing duration (p50/p90/p99)
+   - Latest files table (from PostgreSQL)
+   - Average processing time by content type
 
 **Logs Dashboard (Loki):**
 

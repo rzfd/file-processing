@@ -1,25 +1,25 @@
 # Custom queries for Postgres Exporter
 # This file can be used to define custom metrics queries
 
-# Example: Monitor file_metadata table statistics
+# Monitor file_metadata table statistics
 file_metadata_stats:
   query: |
     SELECT 
       COUNT(*) as total_files,
-      SUM(CASE WHEN status = 'uploaded' THEN 1 ELSE 0 END) as uploaded_files,
+      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_files,
       SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing_files,
       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_files,
       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_files,
-      SUM(file_size) as total_size_bytes
+      COALESCE(SUM(file_size), 0) as total_size_bytes
     FROM file_metadata;
   master: true
   metrics:
     - total_files:
         usage: "GAUGE"
         description: "Total number of files"
-    - uploaded_files:
+    - pending_files:
         usage: "GAUGE"
-        description: "Number of uploaded files"
+        description: "Number of pending files"
     - processing_files:
         usage: "GAUGE"
         description: "Number of files being processed"
@@ -33,24 +33,24 @@ file_metadata_stats:
         usage: "GAUGE"
         description: "Total size of all files in bytes"
 
-# Example: Monitor file processing by type
-file_processing_by_type:
+# Example: Monitor file processing by content type
+file_processing_by_content_type:
   query: |
     SELECT 
-      file_type,
+      COALESCE(content_type, 'unknown') as content_type,
       COUNT(*) as count,
-      AVG(EXTRACT(EPOCH FROM (completed_at - created_at))) as avg_processing_time_seconds
+      AVG(EXTRACT(EPOCH FROM (processed_at - created_at))) as avg_processing_time_seconds
     FROM file_metadata
-    WHERE completed_at IS NOT NULL
-    GROUP BY file_type;
+    WHERE processed_at IS NOT NULL
+    GROUP BY content_type;
   master: true
   metrics:
-    - file_type:
+    - content_type:
         usage: "LABEL"
-        description: "Type of file"
+        description: "Content type of file (text/csv, application/vnd.ms-excel, etc)"
     - count:
         usage: "GAUGE"
-        description: "Number of files of this type"
+        description: "Number of files of this content type"
     - avg_processing_time_seconds:
         usage: "GAUGE"
         description: "Average processing time in seconds"
