@@ -131,6 +131,22 @@ services:
       timeout: 5s
       retries: 5
 
+  # Fluent Bit
+  fluent-bit:
+    image: grafana/fluent-bit-plugin-loki:latest
+    container_name: file-processing-fluent-bit
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+    volumes:
+      - ./configs/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf
+      - ./configs/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf
+    networks:
+      - file-processing-network
+    depends_on:
+      - loki
+    restart: unless-stopped
+
   # Grafana
   grafana:
     image: grafana/grafana:latest
@@ -178,6 +194,17 @@ services:
       MAX_FILE_SIZE: "10485760"
     networks:
       - file-processing-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        fluentd-async: "true"
+        tag: backend
+        labels: "container_name,source"
+        env: "PORT"
+    labels:
+      container_name: "backend"
+      source: "file-processing-backend"
     depends_on:
       postgres:
         condition: service_healthy
@@ -185,6 +212,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      fluent-bit:
+        condition: service_started
     restart: unless-stopped
 
   # Worker Service (File Processor)
@@ -214,6 +243,17 @@ services:
       BATCH_SIZE: "1000"
     networks:
       - file-processing-network
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: localhost:24224
+        fluentd-async: "true"
+        tag: worker
+        labels: "container_name,source"
+        env: "METRICS_PORT"
+    labels:
+      container_name: "worker"
+      source: "file-processing-worker"
     depends_on:
       postgres:
         condition: service_healthy
@@ -221,6 +261,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      fluent-bit:
+        condition: service_started
     restart: unless-stopped
 
   # Postgres Exporter

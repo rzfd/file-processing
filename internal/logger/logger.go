@@ -12,10 +12,11 @@ func InitLogger() {
 	// Set global log level to INFO (hide DEBUG logs)
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 
-	// Use RFC3339 format for timestamps
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	// Use RFC3339 format for timestamps (ISO 8601 format for better compatibility)
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
 
 	// Output JSON to stdout for structured logging
+	// This will be captured by Fluent Bit and sent to Loki
 	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 }
 
