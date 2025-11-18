@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -102,10 +104,28 @@ func main() {
 
 func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/health", s.healthHandler).Methods("GET")
-	s.router.HandleFunc("/upload", s.prometheusMiddleware(s.uploadHandler)).Methods("POST")
-	s.router.HandleFunc("/files", s.prometheusMiddleware(s.listFilesHandler)).Methods("GET")
-	s.router.HandleFunc("/files/{id}", s.prometheusMiddleware(s.getFileStatusHandler)).Methods("GET")
+	s.router.HandleFunc("/upload", s.requestIDMiddleware(s.prometheusMiddleware(s.uploadHandler))).Methods("POST")
+	s.router.HandleFunc("/files", s.requestIDMiddleware(s.prometheusMiddleware(s.listFilesHandler))).Methods("GET")
+	s.router.HandleFunc("/files/{id}", s.requestIDMiddleware(s.prometheusMiddleware(s.getFileStatusHandler))).Methods("GET")
 	s.router.Handle("/metrics", promhttp.Handler())
+}
+
+// requestIDMiddleware adds request_id to context and response header
+func (s *Server) requestIDMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Generate or get request ID from header
+		requestID := r.Header.Get("X-Request-ID")
+		if requestID == "" {
+			requestID = uuid.New().String()
+		}
+
+		// Set to response header for client tracking
+		w.Header().Set("X-Request-ID", requestID)
+
+		// Add to context for downstream usage
+		ctx := context.WithValue(r.Context(), "request_id", requestID)
+		next(w, r.WithContext(ctx))
+	}
 }
 
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
@@ -127,7 +147,11 @@ func (s *Server) prometheusMiddleware(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
+	// Get request ID from context
+	requestID, _ := r.Context().Value("request_id").(string)
+
 	log.Info().
+		Str("request_id", requestID).
 		Str("remote_addr", r.RemoteAddr).
 		Str("method", r.Method).
 		Msg("New upload request")
@@ -136,6 +160,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseMultipartForm(s.config.MaxFileSize)
 	if err != nil {
 		log.Error().
+			Str("request_id", requestID).
 			Err(err).
 			Msg("Failed to parse multipart form")
 		http.Error(w, "Failed to parse multipart form", http.StatusBadRequest)
@@ -145,6 +170,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	file, header, err := r.FormFile("file")
 	if err != nil {
 		log.Error().
+			Str("request_id", requestID).
 			Err(err).
 			Msg("Failed to get file from form")
 		http.Error(w, "Failed to get file from form", http.StatusBadRequest)
@@ -153,6 +179,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	log.Info().
+		Str("request_id", requestID).
 		Str("filename", header.Filename).
 		Int64("size", header.Size).
 		Msg("File received")
@@ -169,6 +196,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	if !allowed {
 		log.Warn().
+			Str("request_id", requestID).
 			Str("extension", ext).
 			Str("filename", header.Filename).
 			Msg("File type not allowed")
@@ -179,6 +207,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	// Validate file size
 	if header.Size > s.config.MaxFileSize {
 		log.Warn().
+			Str("request_id", requestID).
 			Int64("file_size", header.Size).
 			Int64("max_size", s.config.MaxFileSize).
 			Msg("File size exceeds limit")
@@ -189,18 +218,21 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	// Generate unique object name
 	objectName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), header.Filename)
 	log.Debug().
+		Str("request_id", requestID).
 		Str("object_name", objectName).
 		Msg("Generated object name")
 
 	// Upload to MinIO
 	ctx := r.Context()
 	log.Info().
+		Str("request_id", requestID).
 		Str("bucket", s.config.MinIOBucketName).
 		Str("object", objectName).
 		Msg("Uploading to MinIO")
 	err = s.minio.UploadFile(ctx, objectName, file, header.Size, header.Header.Get("Content-Type"))
 	if err != nil {
 		log.Error().
+			Str("request_id", requestID).
 			Err(err).
 			Str("object", objectName).
 			Msg("Failed to upload file to MinIO")
@@ -208,6 +240,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Info().
+		Str("request_id", requestID).
 		Str("object", objectName).
 		Msg("Successfully uploaded to MinIO")
 
@@ -221,10 +254,13 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		Status:      models.StatusPending,
 	}
 
-	log.Info().Msg("Saving metadata to PostgreSQL")
+	log.Info().
+		Str("request_id", requestID).
+		Msg("Saving metadata to PostgreSQL")
 	err = s.db.CreateFileMetadata(fileMetadata)
 	if err != nil {
 		log.Error().
+			Str("request_id", requestID).
 			Err(err).
 			Str("filename", fileMetadata.FileName).
 			Msg("Failed to save metadata")
@@ -232,37 +268,45 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Info().
+		Str("request_id", requestID).
 		Int64("file_id", fileMetadata.ID).
 		Str("filename", fileMetadata.FileName).
 		Msg("Metadata saved successfully")
 
-	// Publish event to Kafka
+	// Publish event to Kafka with trace information
 	event := &models.FileProcessingEvent{
 		FileID:     fileMetadata.ID,
 		FileName:   fileMetadata.FileName,
 		BucketName: fileMetadata.BucketName,
 		ObjectName: fileMetadata.ObjectName,
 		EventType:  "file_uploaded",
+		RequestID:  requestID,
+		TraceID:    requestID, // Use request_id as trace_id for end-to-end tracing
 	}
 
 	log.Info().
+		Str("request_id", requestID).
+		Str("trace_id", requestID).
 		Int64("file_id", event.FileID).
 		Str("filename", event.FileName).
 		Msg("Publishing event to Kafka")
 	err = s.kafka.PublishFileEvent(event)
 	if err != nil {
 		log.Error().
+			Str("request_id", requestID).
 			Err(err).
 			Int64("file_id", event.FileID).
 			Msg("Failed to publish event to Kafka")
 		// Don't fail the request, just log the error
 	} else {
 		log.Info().
+			Str("request_id", requestID).
 			Int64("file_id", event.FileID).
 			Msg("Event published successfully")
 	}
 
 	log.Info().
+		Str("request_id", requestID).
 		Int64("file_id", fileMetadata.ID).
 		Str("filename", fileMetadata.FileName).
 		Str("status", fileMetadata.Status).
@@ -275,10 +319,12 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getFileStatusHandler(w http.ResponseWriter, r *http.Request) {
+	requestID, _ := r.Context().Value("request_id").(string)
 	vars := mux.Vars(r)
 	fileID := vars["id"]
 
 	log.Info().
+		Str("request_id", requestID).
 		Str("file_id", fileID).
 		Msg("Get file status request")
 
@@ -286,6 +332,7 @@ func (s *Server) getFileStatusHandler(w http.ResponseWriter, r *http.Request) {
 	fileMetadata, err := s.db.GetFileMetadata(fileID)
 	if err != nil {
 		log.Warn().
+			Str("request_id", requestID).
 			Err(err).
 			Str("file_id", fileID).
 			Msg("File not found")
@@ -300,6 +347,7 @@ func (s *Server) getFileStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Info().
+		Str("request_id", requestID).
 		Int64("id", fileMetadata.ID).
 		Str("status", fileMetadata.Status).
 		Int64("records", recordCount).
@@ -330,7 +378,11 @@ func (s *Server) getFileStatusHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listFilesHandler(w http.ResponseWriter, r *http.Request) {
-	log.Info().Msg("List files request")
+	requestID, _ := r.Context().Value("request_id").(string)
+
+	log.Info().
+		Str("request_id", requestID).
+		Msg("List files request")
 
 	// Get query parameters
 	status := r.URL.Query().Get("status")
@@ -344,6 +396,7 @@ func (s *Server) listFilesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Info().
+		Str("request_id", requestID).
 		Str("status", status).
 		Int("limit", limit).
 		Msg("Query parameters")
@@ -352,6 +405,7 @@ func (s *Server) listFilesHandler(w http.ResponseWriter, r *http.Request) {
 	files, err := s.db.ListFiles(status, limit)
 	if err != nil {
 		log.Error().
+			Str("request_id", requestID).
 			Err(err).
 			Msg("Failed to list files")
 		http.Error(w, `{"error": "Failed to list files"}`, http.StatusInternalServerError)
@@ -359,6 +413,7 @@ func (s *Server) listFilesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Info().
+		Str("request_id", requestID).
 		Int("count", len(files)).
 		Msg("Files retrieved")
 

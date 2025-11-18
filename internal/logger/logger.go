@@ -24,3 +24,26 @@ func InitLogger() {
 func GetLogger(service string) zerolog.Logger {
 	return log.With().Str("service", service).Logger()
 }
+
+// WithRequestID returns a logger with request_id for HTTP request tracing
+func WithRequestID(requestID string) zerolog.Logger {
+	return log.With().Str("request_id", requestID).Logger()
+}
+
+// WithTraceID returns a logger with trace_id for distributed tracing
+func WithTraceID(traceID string) zerolog.Logger {
+	return log.With().Str("trace_id", traceID).Logger()
+}
+
+// WithFileID returns a logger with file_id for file processing tracking
+func WithFileID(fileID int64) zerolog.Logger {
+	return log.With().Int64("file_id", fileID).Logger()
+}
+
+// WithContext returns a logger with request_id and trace_id
+func WithContext(requestID, traceID string) zerolog.Logger {
+	return log.With().
+		Str("request_id", requestID).
+		Str("trace_id", traceID).
+		Logger()
+}

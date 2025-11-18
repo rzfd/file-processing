@@ -115,16 +115,31 @@ func main() {
 
 func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 	start := time.Now()
+
+	// Extract trace_id from event for end-to-end tracing
+	traceID := event.TraceID
+	if traceID == "" {
+		traceID = event.RequestID // fallback to request_id
+	}
+	if traceID == "" {
+		// Generate a new trace_id if not provided (for backward compatibility)
+		traceID = fmt.Sprintf("file-%d-%d", event.FileID, time.Now().UnixNano())
+	}
+
 	defer func() {
 		duration := time.Since(start).Seconds()
 		processingDuration.Observe(duration)
 		log.Info().
+			Str("trace_id", traceID).
 			Float64("duration_seconds", duration).
 			Msg("Processing completed")
 	}()
 
-	log.Info().Msg("========================================")
 	log.Info().
+		Str("trace_id", traceID).
+		Msg("========================================")
+	log.Info().
+		Str("trace_id", traceID).
 		Str("filename", event.FileName).
 		Int64("file_id", event.FileID).
 		Str("bucket", event.BucketName).
@@ -133,10 +148,12 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 
 	// Update status to processing
 	log.Info().
+		Str("trace_id", traceID).
 		Int64("file_id", event.FileID).
 		Msg("Updating status to 'processing'")
 	if err := w.db.UpdateFileStatus(event.FileID, models.StatusProcessing); err != nil {
 		log.Error().
+			Str("trace_id", traceID).
 			Err(err).
 			Int64("file_id", event.FileID).
 			Msg("Failed to update status to processing")
@@ -148,11 +165,13 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 
 	// Download file from MinIO
 	log.Info().
+		Str("trace_id", traceID).
 		Str("object", event.ObjectName).
 		Msg("Downloading file from MinIO")
 	reader, err := w.minio.DownloadFile(ctx, event.ObjectName)
 	if err != nil {
 		log.Error().
+			Str("trace_id", traceID).
 			Err(err).
 			Str("object", event.ObjectName).
 			Msg("Failed to download file from MinIO")
@@ -162,32 +181,40 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 	}
 	defer reader.Close()
 	log.Info().
+		Str("trace_id", traceID).
 		Str("object", event.ObjectName).
 		Msg("File downloaded successfully")
 
 	// Process file based on extension
 	ext := strings.ToLower(filepath.Ext(event.FileName))
 	log.Info().
+		Str("trace_id", traceID).
 		Str("extension", ext).
 		Msg("Detecting file type")
 	var records []models.ProcessedRecord
 
 	switch ext {
 	case ".csv":
-		log.Info().Msg("Using CSV processor")
+		log.Info().
+			Str("trace_id", traceID).
+			Msg("Using CSV processor")
 		records, err = processor.ProcessCSV(reader)
 	case ".xlsx", ".xls":
-		log.Info().Msg("Using XLSX processor")
+		log.Info().
+			Str("trace_id", traceID).
+			Msg("Using XLSX processor")
 		records, err = processor.ProcessXLSX(reader)
 	default:
 		err = fmt.Errorf("unsupported file type: %s", ext)
 		log.Error().
+			Str("trace_id", traceID).
 			Str("extension", ext).
 			Msg("Unsupported file type")
 	}
 
 	if err != nil {
 		log.Error().
+			Str("trace_id", traceID).
 			Err(err).
 			Str("filename", event.FileName).
 			Msg("Failed to process file")
@@ -197,19 +224,22 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 	}
 
 	log.Info().
+		Str("trace_id", traceID).
 		Int("record_count", len(records)).
 		Str("filename", event.FileName).
 		Msg("Successfully parsed records")
 
 	// Validate records
 	log.Info().
+		Str("trace_id", traceID).
 		Int("record_count", len(records)).
 		Msg("Starting record validation")
 
-	validationErrors := w.validateRecords(event.FileID, records)
+	validationErrors := w.validateRecords(event.FileID, traceID, records)
 
 	if len(validationErrors) > 0 {
 		log.Error().
+			Str("trace_id", traceID).
 			Int("error_count", len(validationErrors)).
 			Int("total_records", len(records)).
 			Msg("Validation failed")
@@ -220,6 +250,7 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 				break // Only log first 5 errors
 			}
 			log.Warn().
+				Str("trace_id", traceID).
 				Int("row", verr.Row).
 				Str("field", verr.Field).
 				Str("value", verr.Value).
@@ -233,6 +264,7 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 	}
 
 	log.Info().
+		Str("trace_id", traceID).
 		Int("record_count", len(records)).
 		Msg("All records passed validation")
 
@@ -242,6 +274,7 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		batchSize := w.config.BatchSize
 		totalBatches := (len(records) + batchSize - 1) / batchSize
 		log.Info().
+			Str("trace_id", traceID).
 			Int("total_records", len(records)).
 			Int("total_batches", totalBatches).
 			Int("batch_size", batchSize).
@@ -257,12 +290,14 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			batch := records[i:end]
 
 			log.Info().
+				Str("trace_id", traceID).
 				Int("batch_num", batchNum).
 				Int("total_batches", totalBatches).
 				Int("batch_records", len(batch)).
 				Msg("Inserting batch")
 			if err := w.db.BatchInsertProcessedRecords(event.FileID, batch); err != nil {
 				log.Error().
+					Str("trace_id", traceID).
 					Err(err).
 					Int("batch_num", batchNum).
 					Msg("Failed to insert batch")
@@ -273,21 +308,28 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 
 			processedRecordsTotal.Add(float64(len(batch)))
 			log.Info().
+				Str("trace_id", traceID).
 				Int("batch_num", batchNum).
 				Int("total_batches", totalBatches).
 				Msg("Batch inserted successfully")
 		}
-		log.Info().Msg("All batches inserted successfully")
+		log.Info().
+			Str("trace_id", traceID).
+			Msg("All batches inserted successfully")
 	} else {
-		log.Warn().Msg("No records to insert")
+		log.Warn().
+			Str("trace_id", traceID).
+			Msg("No records to insert")
 	}
 
 	// Update status to completed
 	log.Info().
+		Str("trace_id", traceID).
 		Int64("file_id", event.FileID).
 		Msg("Updating status to 'completed'")
 	if err := w.db.UpdateFileStatusWithProcessedAt(event.FileID, models.StatusCompleted); err != nil {
 		log.Error().
+			Str("trace_id", traceID).
 			Err(err).
 			Int64("file_id", event.FileID).
 			Msg("Failed to update status to completed")
@@ -296,19 +338,22 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 	}
 
 	log.Info().
+		Str("trace_id", traceID).
 		Int64("file_id", event.FileID).
 		Str("filename", event.FileName).
 		Int("records", len(records)).
 		Str("status", "completed").
 		Msg("✅ File processed successfully")
-	log.Info().Msg("========================================")
+	log.Info().
+		Str("trace_id", traceID).
+		Msg("========================================")
 
 	processedFilesTotal.WithLabelValues("completed").Inc()
 	return nil
 }
 
 // validateRecords validates all records using validation rules
-func (w *Worker) validateRecords(fileID int64, records []models.ProcessedRecord) []validator.ValidationError {
+func (w *Worker) validateRecords(fileID int64, traceID string, records []models.ProcessedRecord) []validator.ValidationError {
 	// Define validation rules
 	// You can customize these rules based on your business requirements
 	rules := []validator.ValidationRule{
@@ -331,6 +376,7 @@ func (w *Worker) validateRecords(fileID int64, records []models.ProcessedRecord)
 	var allErrors []validator.ValidationError
 
 	log.Info().
+		Str("trace_id", traceID).
 		Int("file_id", int(fileID)).
 		Int("record_count", len(records)).
 		Int("rule_count", len(rules)).
@@ -344,12 +390,14 @@ func (w *Worker) validateRecords(fileID int64, records []models.ProcessedRecord)
 
 	if len(allErrors) > 0 {
 		log.Warn().
+			Str("trace_id", traceID).
 			Int("file_id", int(fileID)).
 			Int("total_errors", len(allErrors)).
 			Float64("error_rate", float64(len(allErrors))/float64(len(records))*100).
 			Msg("Validation completed with errors")
 	} else {
 		log.Info().
+			Str("trace_id", traceID).
 			Int("file_id", int(fileID)).
 			Int("record_count", len(records)).
 			Msg("All records validated successfully")
