@@ -12,6 +12,15 @@ import (
 
 // ProcessCSV processes a CSV file and returns processed records
 func ProcessCSV(reader io.Reader) ([]models.ProcessedRecord, error) {
+	result, err := ProcessCSVWithHeaders(reader)
+	if err != nil {
+		return nil, err
+	}
+	return result.Records, nil
+}
+
+// ProcessCSVWithHeaders processes a CSV file and returns headers and records
+func ProcessCSVWithHeaders(reader io.Reader) (*models.ProcessingResult, error) {
 	log.Info().Msg("Starting CSV processing")
 	csvReader := csv.NewReader(reader)
 
@@ -62,5 +71,9 @@ func ProcessCSV(reader io.Reader) ([]models.ProcessedRecord, error) {
 	log.Info().
 		Int("record_count", len(records)).
 		Msg("CSV processing completed")
-	return records, nil
+
+	return &models.ProcessingResult{
+		Headers: headers,
+		Records: records,
+	}, nil
 }

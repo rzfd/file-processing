@@ -1,0 +1,6 @@
+name,nominal
+A,1000
+John Doe,-500
+VeryLongNameThatExceedsTheMaximumLengthOf100CharactersAndShouldFailValidationBecauseItIsTooLongForTheField,2000
+Valid Name,abc
+

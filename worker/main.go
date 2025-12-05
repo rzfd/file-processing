@@ -191,19 +191,19 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		Str("trace_id", traceID).
 		Str("extension", ext).
 		Msg("Detecting file type")
-	var records []models.ProcessedRecord
+	var result *models.ProcessingResult
 
 	switch ext {
 	case ".csv":
 		log.Info().
 			Str("trace_id", traceID).
 			Msg("Using CSV processor")
-		records, err = processor.ProcessCSV(reader)
+		result, err = processor.ProcessCSVWithHeaders(reader)
 	case ".xlsx", ".xls":
 		log.Info().
 			Str("trace_id", traceID).
 			Msg("Using XLSX processor")
-		records, err = processor.ProcessXLSX(reader)
+		result, err = processor.ProcessXLSXWithHeaders(reader)
 	default:
 		err = fmt.Errorf("unsupported file type: %s", ext)
 		log.Error().
@@ -223,6 +223,9 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		return err
 	}
 
+	records := result.Records
+	headers := result.Headers
+
 	log.Info().
 		Str("trace_id", traceID).
 		Int("record_count", len(records)).
@@ -235,7 +238,7 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		Int("record_count", len(records)).
 		Msg("Starting record validation")
 
-	validationErrors := w.validateRecords(event.FileID, traceID, records)
+	validationErrors := w.validateRecords(event.FileID, traceID, headers, records)
 
 	if len(validationErrors) > 0 {
 		log.Error().
@@ -353,7 +356,7 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 }
 
 // validateRecords validates all records using validation rules
-func (w *Worker) validateRecords(fileID int64, traceID string, records []models.ProcessedRecord) []validator.ValidationError {
+func (w *Worker) validateRecords(fileID int64, traceID string, headers []string, records []models.ProcessedRecord) []validator.ValidationError {
 	// Define validation rules
 	// You can customize these rules based on your business requirements
 	rules := []validator.ValidationRule{
@@ -382,17 +385,57 @@ func (w *Worker) validateRecords(fileID int64, traceID string, records []models.
 		Int("rule_count", len(rules)).
 		Msg("Initializing validation")
 
-	// Validate each record
+	// 1. Validate headers
+	log.Info().
+		Str("trace_id", traceID).
+		Msg("Validating file headers")
+	headerErrors := v.ValidateHeaders(headers)
+	if len(headerErrors) > 0 {
+		log.Error().
+			Str("trace_id", traceID).
+			Int("header_error_count", len(headerErrors)).
+			Msg("Header validation failed")
+		allErrors = append(allErrors, headerErrors...)
+		// Return early if headers are invalid
+		return allErrors
+	}
+	log.Info().
+		Str("trace_id", traceID).
+		Msg("Header validation passed")
+
+	// 2. Validate each record (field validation)
+	log.Info().
+		Str("trace_id", traceID).
+		Msg("Validating record fields")
 	for i, record := range records {
 		errors := v.ValidateRecord(i+1, record.Data)
 		allErrors = append(allErrors, errors...)
 	}
+
+	// 3. Check for duplicate records
+	log.Info().
+		Str("trace_id", traceID).
+		Msg("Checking for duplicate records")
+
+	// Extract data maps from records
+	recordData := make([]map[string]interface{}, len(records))
+	for i, record := range records {
+		recordData[i] = record.Data
+	}
+
+	// Define key fields for duplicate detection
+	// You can customize these based on your business requirements
+	duplicateKeyFields := []string{"name", "nominal"}
+	duplicateErrors := validator.ValidateDuplicates(recordData, duplicateKeyFields)
+	allErrors = append(allErrors, duplicateErrors...)
 
 	if len(allErrors) > 0 {
 		log.Warn().
 			Str("trace_id", traceID).
 			Int("file_id", int(fileID)).
 			Int("total_errors", len(allErrors)).
+			Int("header_errors", len(headerErrors)).
+			Int("duplicate_errors", len(duplicateErrors)).
 			Float64("error_rate", float64(len(allErrors))/float64(len(records))*100).
 			Msg("Validation completed with errors")
 	} else {

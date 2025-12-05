@@ -215,6 +215,26 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate duplicate filename
+	isDuplicate, err := s.db.CheckDuplicateFilename(header.Filename)
+	if err != nil {
+		log.Error().
+			Str("request_id", requestID).
+			Err(err).
+			Str("filename", header.Filename).
+			Msg("Failed to check duplicate filename")
+		http.Error(w, "Failed to validate filename", http.StatusInternalServerError)
+		return
+	}
+	if isDuplicate {
+		log.Warn().
+			Str("request_id", requestID).
+			Str("filename", header.Filename).
+			Msg("Duplicate filename detected")
+		http.Error(w, "File with this name already exists", http.StatusConflict)
+		return
+	}
+
 	// Generate unique object name
 	objectName := fmt.Sprintf("%d_%s", time.Now().UnixNano(), header.Filename)
 	log.Debug().

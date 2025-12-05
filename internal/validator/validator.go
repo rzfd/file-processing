@@ -372,6 +372,66 @@ func (v *Validator) ValidateHeaders(headers []string) []ValidationError {
 	return errors
 }
 
+// ValidateDuplicates checks for duplicate records based on specified key fields
+func ValidateDuplicates(records []map[string]interface{}, keyFields []string) []ValidationError {
+	var errors []ValidationError
+	seen := make(map[string][]int) // hash -> row numbers
+
+	log.Info().
+		Int("record_count", len(records)).
+		Strs("key_fields", keyFields).
+		Msg("Checking for duplicate records")
+
+	for i, record := range records {
+		rowNum := i + 1
+
+		// Build a hash key from the specified fields
+		var keyParts []string
+		for _, field := range keyFields {
+			if val, exists := record[field]; exists {
+				keyParts = append(keyParts, fmt.Sprintf("%v", val))
+			} else {
+				keyParts = append(keyParts, "")
+			}
+		}
+		key := strings.Join(keyParts, "|")
+
+		// Check if we've seen this combination before
+		if rows, exists := seen[key]; exists {
+			err := ValidationError{
+				Row:     rowNum,
+				Field:   strings.Join(keyFields, "+"),
+				Value:   key,
+				Message: fmt.Sprintf("Duplicate record found (same as row %v)", rows),
+			}
+			errors = append(errors, err)
+
+			log.Warn().
+				Int("row", rowNum).
+				Ints("duplicate_of", rows).
+				Str("key", key).
+				Msg("Duplicate record detected")
+		} else {
+			seen[key] = []int{rowNum}
+		}
+
+		// Add current row to the list for this key
+		if rows, exists := seen[key]; exists && len(rows) > 0 && rows[0] != rowNum {
+			seen[key] = append(rows, rowNum)
+		}
+	}
+
+	if len(errors) > 0 {
+		log.Warn().
+			Int("duplicate_count", len(errors)).
+			Msg("Duplicate records found")
+	} else {
+		log.Info().Msg("No duplicate records found")
+	}
+
+	return errors
+}
+
 // GetValidationSummary returns a summary of validation results
 func (v *ValidationResult) GetValidationSummary() string {
 	if v.Valid {

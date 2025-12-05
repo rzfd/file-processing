@@ -22,7 +22,7 @@ func NewDB(cfg *config.Config) (*DB, error) {
 		Str("host", cfg.DBHost).
 		Str("port", cfg.DBPort).
 		Msg("Connecting to PostgreSQL")
-	
+
 	conn, err := sql.Open("postgres", cfg.GetDSN())
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -258,6 +258,27 @@ func (db *DB) ListFiles(status string, limit int) ([]models.FileMetadata, error)
 	}
 
 	return files, nil
+}
+
+// CheckDuplicateFilename checks if a filename already exists in the database
+func (db *DB) CheckDuplicateFilename(filename string) (bool, error) {
+	query := `SELECT COUNT(*) FROM file_metadata WHERE file_name = $1`
+
+	var count int
+	err := db.conn.QueryRow(query, filename).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+
+	exists := count > 0
+	if exists {
+		log.Warn().
+			Str("filename", filename).
+			Int("count", count).
+			Msg("Duplicate filename detected")
+	}
+
+	return exists, nil
 }
 
 // Close closes the database connection

@@ -13,6 +13,15 @@ import (
 
 // ProcessXLSX processes an XLSX file and returns processed records
 func ProcessXLSX(reader io.Reader) ([]models.ProcessedRecord, error) {
+	result, err := ProcessXLSXWithHeaders(reader)
+	if err != nil {
+		return nil, err
+	}
+	return result.Records, nil
+}
+
+// ProcessXLSXWithHeaders processes an XLSX file and returns headers and records
+func ProcessXLSXWithHeaders(reader io.Reader) (*models.ProcessingResult, error) {
 	log.Info().Msg("Starting XLSX processing")
 
 	// Read all data from reader
@@ -82,5 +91,9 @@ func ProcessXLSX(reader io.Reader) ([]models.ProcessedRecord, error) {
 	log.Info().
 		Int("record_count", len(records)).
 		Msg("XLSX processing completed")
-	return records, nil
+	
+	return &models.ProcessingResult{
+		Headers: headers,
+		Records: records,
+	}, nil
 }

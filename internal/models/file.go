@@ -35,6 +35,12 @@ type ProcessedRecord struct {
 	CreatedAt time.Time              `json:"created_at" db:"created_at"`
 }
 
+// ProcessingResult contains both headers and records from file processing
+type ProcessingResult struct {
+	Headers []string
+	Records []ProcessedRecord
+}
+
 const (
 	StatusPending    = "pending"
 	StatusProcessing = "processing"
