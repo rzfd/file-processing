@@ -88,6 +88,47 @@
                 }
             }
         },
+        "/files/{id}/download": {
+            "get": {
+                "description": "Download the generated PDF file for a completed file",
+                "produces": [
+                    "application/pdf"
+                ],
+                "tags": [
+                    "files"
+                ],
+                "summary": "Download PDF file",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "File ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "PDF file",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "404": {
+                        "description": "File not found or PDF not available",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
         "/scheduled": {
             "get": {
                 "description": "Get a list of files that are scheduled for processing",
@@ -216,6 +257,9 @@
                     "type": "integer"
                 },
                 "object_name": {
+                    "type": "string"
+                },
+                "pdf_path": {
                     "type": "string"
                 },
                 "processed_at": {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -125,6 +126,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/upload", s.requestIDMiddleware(s.prometheusMiddleware(s.uploadHandler))).Methods("POST")
 	s.router.HandleFunc("/files", s.requestIDMiddleware(s.prometheusMiddleware(s.listFilesHandler))).Methods("GET")
 	s.router.HandleFunc("/files/{id}", s.requestIDMiddleware(s.prometheusMiddleware(s.getFileStatusHandler))).Methods("GET")
+	s.router.HandleFunc("/files/{id}/download", s.requestIDMiddleware(s.prometheusMiddleware(s.downloadPDFHandler))).Methods("GET")
 	s.router.HandleFunc("/scheduled", s.requestIDMiddleware(s.prometheusMiddleware(s.listScheduledFilesHandler))).Methods("GET")
 	s.router.Handle("/metrics", promhttp.Handler())
 
@@ -634,6 +636,106 @@ func (s *Server) listScheduledFilesHandler(w http.ResponseWriter, r *http.Reques
 		Str("request_id", requestID).
 		Int("count", len(files)).
 		Msg("List scheduled files completed")
+}
+
+// downloadPDFHandler handles PDF download requests
+// @Summary Download PDF file
+// @Description Download the generated PDF file for a completed file
+// @Tags files
+// @Produce application/pdf
+// @Param id path string true "File ID"
+// @Success 200 {file} file "PDF file"
+// @Failure 404 {string} string "File not found or PDF not available"
+// @Failure 500 {string} string "Internal server error"
+// @Router /files/{id}/download [get]
+func (s *Server) downloadPDFHandler(w http.ResponseWriter, r *http.Request) {
+	requestID, _ := r.Context().Value("request_id").(string)
+	vars := mux.Vars(r)
+	fileID := vars["id"]
+
+	log.Info().
+		Str("request_id", requestID).
+		Str("file_id", fileID).
+		Msg("Download PDF request")
+
+	// Get file metadata from database
+	fileMetadata, err := s.db.GetFileMetadata(fileID)
+	if err != nil {
+		log.Warn().
+			Str("request_id", requestID).
+			Err(err).
+			Str("file_id", fileID).
+			Msg("File not found")
+		http.Error(w, `{"error": "File not found"}`, http.StatusNotFound)
+		return
+	}
+
+	// Check if file is completed
+	completedStatus, err := s.db.GetStatusByCode("completed")
+	if err != nil {
+		log.Error().
+			Str("request_id", requestID).
+			Err(err).
+			Msg("Failed to get completed status")
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if fileMetadata.Status != completedStatus.Code {
+		log.Warn().
+			Str("request_id", requestID).
+			Str("file_id", fileID).
+			Str("status", fileMetadata.Status).
+			Msg("File is not completed yet")
+		http.Error(w, `{"error": "File is not completed yet. PDF is only available for completed files."}`, http.StatusBadRequest)
+		return
+	}
+
+	// Check if PDF path exists
+	if fileMetadata.PDFPath == nil || *fileMetadata.PDFPath == "" {
+		log.Warn().
+			Str("request_id", requestID).
+			Str("file_id", fileID).
+			Msg("PDF not available for this file")
+		http.Error(w, `{"error": "PDF not available for this file"}`, http.StatusNotFound)
+		return
+	}
+
+	// Download PDF from MinIO
+	ctx := context.Background()
+	pdfReader, err := s.minio.DownloadFile(ctx, *fileMetadata.PDFPath)
+	if err != nil {
+		log.Error().
+			Str("request_id", requestID).
+			Err(err).
+			Str("file_id", fileID).
+			Str("pdf_path", *fileMetadata.PDFPath).
+			Msg("Failed to download PDF from MinIO")
+		http.Error(w, "Failed to download PDF", http.StatusInternalServerError)
+		return
+	}
+	defer pdfReader.Close()
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.pdf"`, fileMetadata.FileName))
+
+	// Copy PDF data to response
+	_, err = io.Copy(w, pdfReader)
+	if err != nil {
+		log.Error().
+			Str("request_id", requestID).
+			Err(err).
+			Str("file_id", fileID).
+			Msg("Failed to stream PDF to client")
+		return
+	}
+
+	log.Info().
+		Str("request_id", requestID).
+		Str("file_id", fileID).
+		Str("pdf_path", *fileMetadata.PDFPath).
+		Msg("PDF downloaded successfully")
 }
 
 type responseWriter struct {

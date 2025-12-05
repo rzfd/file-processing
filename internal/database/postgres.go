@@ -128,12 +128,15 @@ func (db *DB) migrate() error {
 			status_code VARCHAR(50) NOT NULL DEFAULT 'pending',
 			schedule_type_code VARCHAR(50) NOT NULL DEFAULT 'immediate',
 			scheduled_at TIMESTAMP,
+			pdf_path VARCHAR(500),
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			processed_at TIMESTAMP,
 			FOREIGN KEY (status_code) REFERENCES status_types(code),
 			FOREIGN KEY (schedule_type_code) REFERENCES schedule_types(code)
 		)`,
+		// Add pdf_path column if it doesn't exist (for existing databases)
+		`ALTER TABLE file_metadata ADD COLUMN IF NOT EXISTS pdf_path VARCHAR(500)`,
 		`CREATE TABLE IF NOT EXISTS processed_records (
 			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 			file_id BIGINT NOT NULL REFERENCES file_metadata(id) ON DELETE CASCADE,
@@ -270,6 +273,19 @@ func (db *DB) UpdateFileStatusWithProcessedAt(fileID int64, status string) error
 	return err
 }
 
+// UpdatePDFPath updates the PDF path for a file
+func (db *DB) UpdatePDFPath(fileID int64, pdfPath string) error {
+	query := `UPDATE file_metadata SET pdf_path = $1, updated_at = $2 WHERE id = $3`
+	_, err := db.conn.Exec(query, pdfPath, time.Now(), fileID)
+	if err == nil {
+		log.Info().
+			Int64("file_id", fileID).
+			Str("pdf_path", pdfPath).
+			Msg("Updated PDF path")
+	}
+	return err
+}
+
 // BatchInsertProcessedRecords inserts multiple processed records
 func (db *DB) BatchInsertProcessedRecords(fileID int64, records []models.ProcessedRecord) error {
 	if len(records) == 0 {
@@ -323,7 +339,7 @@ func (db *DB) GetFileMetadata(fileID string) (*models.FileMetadata, error) {
 	query := `SELECT id, file_name, file_size, content_type, bucket_name, object_name, 
 		status_code, schedule_type_code, 
 		COALESCE((scheduled_at AT TIME ZONE 'Asia/Jakarta' AT TIME ZONE 'UTC')::timestamp, NULL), 
-		created_at, updated_at, processed_at 
+		pdf_path, created_at, updated_at, processed_at 
 		FROM file_metadata WHERE id = $1`
 
 	var file models.FileMetadata
@@ -337,6 +353,7 @@ func (db *DB) GetFileMetadata(fileID string) (*models.FileMetadata, error) {
 		&file.Status,
 		&file.ScheduleType,
 		&file.ScheduledAt,
+		&file.PDFPath,
 		&file.CreatedAt,
 		&file.UpdatedAt,
 		&file.ProcessedAt,
@@ -375,13 +392,13 @@ func (db *DB) ListFiles(status string, limit int) ([]models.FileMetadata, error)
 
 	if status != "" {
 		query = `SELECT id, file_name, file_size, content_type, bucket_name, object_name, 
-			status_code, created_at, updated_at, processed_at 
+			status_code, pdf_path, created_at, updated_at, processed_at 
 			FROM file_metadata WHERE status_code = $1 
 			ORDER BY created_at DESC LIMIT $2`
 		args = []interface{}{status, limit}
 	} else {
 		query = `SELECT id, file_name, file_size, content_type, bucket_name, object_name, 
-			status_code, created_at, updated_at, processed_at 
+			status_code, pdf_path, created_at, updated_at, processed_at 
 			FROM file_metadata 
 			ORDER BY created_at DESC LIMIT $1`
 		args = []interface{}{limit}
@@ -404,6 +421,7 @@ func (db *DB) ListFiles(status string, limit int) ([]models.FileMetadata, error)
 			&file.BucketName,
 			&file.ObjectName,
 			&file.Status,
+			&file.PDFPath,
 			&file.CreatedAt,
 			&file.UpdatedAt,
 			&file.ProcessedAt,
@@ -626,7 +644,7 @@ func (db *DB) GetScheduledFiles(limit int) ([]models.FileMetadata, error) {
 	query := `SELECT id, file_name, file_size, content_type, bucket_name, object_name, 
 		status_code, schedule_type_code, 
 		(scheduled_at AT TIME ZONE 'Asia/Jakarta' AT TIME ZONE 'UTC')::timestamp, 
-		created_at, updated_at, processed_at 
+		pdf_path, created_at, updated_at, processed_at 
 		FROM file_metadata 
 		WHERE schedule_type_code = 'scheduled' 
 		AND status_code = 'pending'
@@ -654,6 +672,7 @@ func (db *DB) GetScheduledFiles(limit int) ([]models.FileMetadata, error) {
 			&file.Status,
 			&file.ScheduleType,
 			&file.ScheduledAt,
+			&file.PDFPath,
 			&file.CreatedAt,
 			&file.UpdatedAt,
 			&file.ProcessedAt,
@@ -889,6 +908,51 @@ func (db *DB) GetItemsByBatchID(batchID int64) ([]models.Item, error) {
 		FROM items WHERE batch_id = $1 ORDER BY row_number`
 
 	rows, err := db.conn.Query(query, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []models.Item
+	for rows.Next() {
+		var item models.Item
+		var errorsJSON []byte
+		err := rows.Scan(
+			&item.ID,
+			&item.BatchID,
+			&item.FileID,
+			&item.RowNumber,
+			&item.Name,
+			&item.Nominal,
+			&item.ValidationStatus,
+			&errorsJSON,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+			&item.ValidatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if errorsJSON != nil {
+			if err := json.Unmarshal(errorsJSON, &item.ValidationErrors); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal validation errors: %w", err)
+			}
+		}
+
+		items = append(items, item)
+	}
+
+	return items, nil
+}
+
+// GetItemsByFileID retrieves all items for a file (across all batches)
+func (db *DB) GetItemsByFileID(fileID int64) ([]models.Item, error) {
+	query := `SELECT id, batch_id, file_id, row_number, name, nominal, validation_status_code, 
+		validation_errors, created_at, updated_at, validated_at 
+		FROM items WHERE file_id = $1 ORDER BY row_number`
+
+	rows, err := db.conn.Query(query, fileID)
 	if err != nil {
 		return nil, err
 	}

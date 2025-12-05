@@ -18,6 +18,7 @@ import (
 	"github.com/rzfd/file-processing-system/internal/logger"
 	"github.com/rzfd/file-processing-system/internal/minio"
 	"github.com/rzfd/file-processing-system/internal/models"
+	"github.com/rzfd/file-processing-system/internal/pdf"
 	"github.com/rzfd/file-processing-system/internal/processor"
 	"github.com/rzfd/file-processing-system/internal/validator"
 )
@@ -606,6 +607,62 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			Msg("Failed to update status to completed")
 		processedFilesTotal.WithLabelValues(failedStatus.Code).Inc()
 		return err
+	}
+
+	// Generate PDF with watermark after status is completed
+	log.Info().
+		Str("trace_id", traceID).
+		Int64("file_id", event.FileID).
+		Msg("Generating PDF with watermark")
+
+	// Get all items for the file
+	allItems, err := w.db.GetItemsByFileID(event.FileID)
+	if err != nil {
+		log.Warn().
+			Str("trace_id", traceID).
+			Err(err).
+			Int64("file_id", event.FileID).
+			Msg("Failed to get items for PDF generation, continuing without PDF")
+	} else if len(allItems) > 0 {
+		// Generate PDF
+		pdfGen := pdf.NewGenerator()
+		pdfData, err := pdfGen.GeneratePDF(allItems, fileMetadata.CreatedAt, event.FileName)
+		if err != nil {
+			log.Warn().
+				Str("trace_id", traceID).
+				Err(err).
+				Int64("file_id", event.FileID).
+				Msg("Failed to generate PDF, continuing without PDF")
+		} else {
+			// Generate PDF filename
+			pdfFileName := fmt.Sprintf("%d_%s.pdf", event.FileID, strings.TrimSuffix(event.FileName, filepath.Ext(event.FileName)))
+
+			// Upload PDF to MinIO
+			if err := w.minio.UploadPDF(ctx, pdfFileName, pdfData); err != nil {
+				log.Warn().
+					Str("trace_id", traceID).
+					Err(err).
+					Int64("file_id", event.FileID).
+					Msg("Failed to upload PDF to MinIO, continuing without PDF")
+			} else {
+				// Update PDF path in database
+				pdfPath := fmt.Sprintf("download/%s", pdfFileName)
+				if err := w.db.UpdatePDFPath(event.FileID, pdfPath); err != nil {
+					log.Warn().
+						Str("trace_id", traceID).
+						Err(err).
+						Int64("file_id", event.FileID).
+						Str("pdf_path", pdfPath).
+						Msg("Failed to update PDF path in database")
+				} else {
+					log.Info().
+						Str("trace_id", traceID).
+						Int64("file_id", event.FileID).
+						Str("pdf_path", pdfPath).
+						Msg("PDF generated and uploaded successfully")
+				}
+			}
+		}
 	}
 
 	log.Info().

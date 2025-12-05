@@ -1,6 +1,7 @@
 package minio
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -111,4 +112,28 @@ func (c *Client) DownloadFile(ctx context.Context, objectName string) (io.ReadCl
 // DeleteFile deletes a file from MinIO
 func (c *Client) DeleteFile(ctx context.Context, objectName string) error {
 	return c.client.RemoveObject(ctx, c.bucketName, objectName, minio.RemoveObjectOptions{})
+}
+
+// UploadPDF uploads a PDF file to the download folder in MinIO
+func (c *Client) UploadPDF(ctx context.Context, objectName string, pdfData *bytes.Buffer) error {
+	log.Info().
+		Str("object", objectName).
+		Int("size", pdfData.Len()).
+		Msg("Uploading PDF to MinIO download folder")
+
+	// Use "download/" prefix for PDF files
+	downloadPath := fmt.Sprintf("download/%s", objectName)
+
+	info, err := c.client.PutObject(ctx, c.bucketName, downloadPath, pdfData, int64(pdfData.Len()), minio.PutObjectOptions{
+		ContentType: "application/pdf",
+	})
+
+	if err == nil {
+		log.Info().
+			Str("object", downloadPath).
+			Int64("size", info.Size).
+			Msg("PDF upload successful")
+	}
+
+	return err
 }

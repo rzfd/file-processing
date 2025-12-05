@@ -37,6 +37,7 @@ type FileMetadata struct {
 	Status       string     `json:"status" db:"status_code"` // Changed to status_code
 	ScheduleType string     `json:"schedule_type" db:"schedule_type_code"`
 	ScheduledAt  *time.Time `json:"scheduled_at,omitempty" db:"scheduled_at"`
+	PDFPath      *string    `json:"pdf_path,omitempty" db:"pdf_path"`
 	CreatedAt    time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at" db:"updated_at"`
 	ProcessedAt  *time.Time `json:"processed_at,omitempty" db:"processed_at"`

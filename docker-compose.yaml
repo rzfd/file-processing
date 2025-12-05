@@ -101,6 +101,10 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # Increase max message size to handle larger files (default is 100MB)
+      KAFKA_MESSAGE_MAX_BYTES: 10485760
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 10485760
+      KAFKA_FETCH_MESSAGE_MAX_BYTES: 10485760
     networks:
       - file-processing-network
     healthcheck:
