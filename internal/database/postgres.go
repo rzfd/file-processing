@@ -143,6 +143,9 @@ func (db *DB) migrate() error {
 			file_id BIGINT NOT NULL REFERENCES file_metadata(id) ON DELETE CASCADE,
 			batch_number INTEGER NOT NULL,
 			total_items INTEGER NOT NULL DEFAULT 0,
+			items_processed INTEGER NOT NULL DEFAULT 0,
+			items_success INTEGER NOT NULL DEFAULT 0,
+			items_failed INTEGER NOT NULL DEFAULT 0,
 			validation_status_code VARCHAR(50) NOT NULL DEFAULT 'validation_not_started',
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -150,13 +153,18 @@ func (db *DB) migrate() error {
 			UNIQUE(file_id, batch_number),
 			FOREIGN KEY (validation_status_code) REFERENCES status_types(code)
 		)`,
-		// Create items table
+		// Ensure counter columns exist for existing databases
+		`ALTER TABLE batches ADD COLUMN IF NOT EXISTS items_processed INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE batches ADD COLUMN IF NOT EXISTS items_success INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE batches ADD COLUMN IF NOT EXISTS items_failed INTEGER NOT NULL DEFAULT 0`,
+		// Create items table (with fixed columns: name, nominal)
 		`CREATE TABLE IF NOT EXISTS items (
 			id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 			batch_id BIGINT NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
 			file_id BIGINT NOT NULL REFERENCES file_metadata(id) ON DELETE CASCADE,
 			row_number INTEGER NOT NULL CHECK (row_number > 0),
-			data JSONB NOT NULL,
+			name TEXT,
+			nominal NUMERIC,
 			validation_status_code VARCHAR(50) NOT NULL DEFAULT 'validation_not_started',
 			validation_errors JSONB,
 			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -165,6 +173,13 @@ func (db *DB) migrate() error {
 			UNIQUE(batch_id, row_number),
 			FOREIGN KEY (validation_status_code) REFERENCES status_types(code)
 		)`,
+		// Drop legacy columns if exist
+		`ALTER TABLE items DROP COLUMN IF EXISTS data`,
+		`ALTER TABLE items DROP COLUMN IF EXISTS column_name`,
+		`ALTER TABLE items DROP COLUMN IF EXISTS string_value`,
+		`ALTER TABLE items DROP COLUMN IF EXISTS number_value`,
+		`ALTER TABLE items DROP COLUMN IF EXISTS boolean_value`,
+		`ALTER TABLE items DROP COLUMN IF EXISTS date_value`,
 		`CREATE INDEX IF NOT EXISTS idx_file_metadata_status_code ON file_metadata(status_code)`,
 		`CREATE INDEX IF NOT EXISTS idx_file_metadata_schedule_type ON file_metadata(schedule_type_code)`,
 		`CREATE INDEX IF NOT EXISTS idx_file_metadata_scheduled_at ON file_metadata(scheduled_at) WHERE scheduled_at IS NOT NULL`,
@@ -175,11 +190,13 @@ func (db *DB) migrate() error {
 		// Indexes for batches
 		`CREATE INDEX IF NOT EXISTS idx_batches_file_id ON batches(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_batches_validation_status ON batches(validation_status_code)`,
+		`CREATE INDEX IF NOT EXISTS idx_batches_items_processed ON batches(items_processed)`,
 		// Indexes for items
 		`CREATE INDEX IF NOT EXISTS idx_items_batch_id ON items(batch_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_items_file_id ON items(file_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_items_validation_status ON items(validation_status_code)`,
-		`CREATE INDEX IF NOT EXISTS idx_items_data_gin ON items USING GIN (data)`,
+		`CREATE INDEX IF NOT EXISTS idx_items_name ON items(name)`,
+		`CREATE INDEX IF NOT EXISTS idx_items_nominal ON items(nominal)`,
 	}
 
 	for _, query := range queries {
@@ -331,6 +348,15 @@ func (db *DB) GetRecordCount(fileID int64) (int64, error) {
 	err := db.conn.QueryRow(query, fileID).Scan(&count)
 
 	return count, err
+}
+
+// UpdateBatchCounters updates processed/success/failed counters for a batch
+func (db *DB) UpdateBatchCounters(batchID int64, processed, success, failed int) error {
+	query := `UPDATE batches 
+		SET items_processed = $1, items_success = $2, items_failed = $3, updated_at = $4
+		WHERE id = $5`
+	_, err := db.conn.Exec(query, processed, success, failed, time.Now(), batchID)
+	return err
 }
 
 // ListFiles retrieves a list of files with optional status filter
@@ -631,14 +657,17 @@ func (db *DB) GetScheduledFiles(limit int) ([]models.FileMetadata, error) {
 // CreateBatch creates a new batch
 func (db *DB) CreateBatch(batch *models.Batch) error {
 	query := `INSERT INTO batches 
-		(file_id, batch_number, total_items, validation_status_code, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`
+		(file_id, batch_number, total_items, items_processed, items_success, items_failed, validation_status_code, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`
 
 	err := db.conn.QueryRow(
 		query,
 		batch.FileID,
 		batch.BatchNumber,
 		batch.TotalItems,
+		batch.ItemsProcessed,
+		batch.ItemsSuccess,
+		batch.ItemsFailed,
 		batch.ValidationStatus,
 		time.Now(),
 		time.Now(),
@@ -657,22 +686,30 @@ func (db *DB) CreateBatch(batch *models.Batch) error {
 
 // UpdateBatchValidationStatus updates batch validation status
 func (db *DB) UpdateBatchValidationStatus(batchID int64, statusCode string) error {
-	query := `UPDATE batches 
-		SET validation_status_code = $1, updated_at = $2, validated_at = CASE WHEN $1 IN ('validation_success', 'validation_failed') THEN $2 ELSE validated_at END 
-		WHERE id = $3`
-	_, err := db.conn.Exec(query, statusCode, time.Now(), batchID)
-	if err == nil {
-		log.Info().
-			Int64("batch_id", batchID).
-			Str("status", statusCode).
-			Msg("Updated batch validation status")
+	now := time.Now()
+	// Update status and updated_at
+	_, err := db.conn.Exec(`UPDATE batches SET validation_status_code = $1, updated_at = $2 WHERE id = $3`, statusCode, now, batchID)
+	if err != nil {
+		return err
 	}
-	return err
+
+	// If success or failed, set validated_at
+	if statusCode == "validation_success" || statusCode == "validation_failed" {
+		if _, err := db.conn.Exec(`UPDATE batches SET validated_at = $1 WHERE id = $2`, now, batchID); err != nil {
+			return err
+		}
+	}
+
+	log.Info().
+		Int64("batch_id", batchID).
+		Str("status", statusCode).
+		Msg("Updated batch validation status")
+	return nil
 }
 
 // GetBatchByID retrieves a batch by ID
 func (db *DB) GetBatchByID(batchID int64) (*models.Batch, error) {
-	query := `SELECT id, file_id, batch_number, total_items, validation_status_code, 
+	query := `SELECT id, file_id, batch_number, total_items, items_processed, items_success, items_failed, validation_status_code, 
 		created_at, updated_at, validated_at 
 		FROM batches WHERE id = $1`
 
@@ -682,6 +719,9 @@ func (db *DB) GetBatchByID(batchID int64) (*models.Batch, error) {
 		&batch.FileID,
 		&batch.BatchNumber,
 		&batch.TotalItems,
+		&batch.ItemsProcessed,
+		&batch.ItemsSuccess,
+		&batch.ItemsFailed,
 		&batch.ValidationStatus,
 		&batch.CreatedAt,
 		&batch.UpdatedAt,
@@ -697,7 +737,7 @@ func (db *DB) GetBatchByID(batchID int64) (*models.Batch, error) {
 
 // GetBatchesByFileID retrieves all batches for a file
 func (db *DB) GetBatchesByFileID(fileID int64) ([]models.Batch, error) {
-	query := `SELECT id, file_id, batch_number, total_items, validation_status_code, 
+	query := `SELECT id, file_id, batch_number, total_items, items_processed, items_success, items_failed, validation_status_code, 
 		created_at, updated_at, validated_at 
 		FROM batches WHERE file_id = $1 ORDER BY batch_number`
 
@@ -715,6 +755,9 @@ func (db *DB) GetBatchesByFileID(fileID int64) ([]models.Batch, error) {
 			&batch.FileID,
 			&batch.BatchNumber,
 			&batch.TotalItems,
+			&batch.ItemsProcessed,
+			&batch.ItemsSuccess,
+			&batch.ItemsFailed,
 			&batch.ValidationStatus,
 			&batch.CreatedAt,
 			&batch.UpdatedAt,
@@ -748,8 +791,8 @@ func (db *DB) BatchInsertItems(batchID int64, fileID int64, items []models.Item)
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`INSERT INTO items 
-		(batch_id, file_id, row_number, data, validation_status_code, created_at, updated_at) 
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`)
+		(batch_id, file_id, row_number, name, nominal, validation_status_code, created_at, updated_at) 
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`)
 	if err != nil {
 		return err
 	}
@@ -757,12 +800,16 @@ func (db *DB) BatchInsertItems(batchID int64, fileID int64, items []models.Item)
 
 	now := time.Now()
 	for _, item := range items {
-		// Convert map to JSON
-		dataJSON, err := json.Marshal(item.Data)
-		if err != nil {
-			return fmt.Errorf("failed to marshal data: %w", err)
-		}
-		_, err = stmt.Exec(batchID, fileID, item.RowNumber, dataJSON, item.ValidationStatus, now, now)
+		_, err = stmt.Exec(
+			batchID,
+			fileID,
+			item.RowNumber,
+			item.Name,
+			item.Nominal,
+			item.ValidationStatus,
+			now,
+			now,
+		)
 		if err != nil {
 			return err
 		}
@@ -781,32 +828,50 @@ func (db *DB) BatchInsertItems(batchID int64, fileID int64, items []models.Item)
 
 // UpdateItemValidationStatus updates item validation status
 func (db *DB) UpdateItemValidationStatus(itemID int64, statusCode string, errors map[string]interface{}) error {
-	var errorsJSON []byte
+	now := time.Now()
+
+	// Update status and updated_at
 	var err error
-	if errors != nil {
-		errorsJSON, err = json.Marshal(errors)
-		if err != nil {
-			return fmt.Errorf("failed to marshal validation errors: %w", err)
+	if errors != nil && len(errors) > 0 {
+		errorsJSON, marshalErr := json.Marshal(errors)
+		if marshalErr != nil {
+			return fmt.Errorf("failed to marshal validation errors: %w", marshalErr)
+		}
+		// Update with errors
+		_, err = db.conn.Exec(`UPDATE items 
+			SET validation_status_code = $1, 
+			    updated_at = $2,
+			    validation_errors = $3::jsonb
+			WHERE id = $4`, statusCode, now, errorsJSON, itemID)
+	} else {
+		// Update without errors (keep existing validation_errors)
+		_, err = db.conn.Exec(`UPDATE items 
+			SET validation_status_code = $1, 
+			    updated_at = $2
+			WHERE id = $3`, statusCode, now, itemID)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	// If success or failed, set validated_at
+	if statusCode == "validation_success" || statusCode == "validation_failed" {
+		if _, err := db.conn.Exec(`UPDATE items SET validated_at = $1 WHERE id = $2`, now, itemID); err != nil {
+			return err
 		}
 	}
 
-	query := `UPDATE items 
-		SET validation_status_code = $1, updated_at = $2, validated_at = CASE WHEN $1 IN ('validation_success', 'validation_failed') THEN $2 ELSE validated_at END,
-		validation_errors = CASE WHEN $3 IS NOT NULL THEN $3::jsonb ELSE validation_errors END
-		WHERE id = $4`
-	_, err = db.conn.Exec(query, statusCode, time.Now(), errorsJSON, itemID)
-	if err == nil {
-		log.Info().
-			Int64("item_id", itemID).
-			Str("status", statusCode).
-			Msg("Updated item validation status")
-	}
-	return err
+	log.Info().
+		Int64("item_id", itemID).
+		Str("status", statusCode).
+		Msg("Updated item validation status")
+	return nil
 }
 
 // GetItemsByBatchID retrieves all items for a batch
 func (db *DB) GetItemsByBatchID(batchID int64) ([]models.Item, error) {
-	query := `SELECT id, batch_id, file_id, row_number, data, validation_status_code, 
+	query := `SELECT id, batch_id, file_id, row_number, name, nominal, validation_status_code, 
 		validation_errors, created_at, updated_at, validated_at 
 		FROM items WHERE batch_id = $1 ORDER BY row_number`
 
@@ -819,14 +884,14 @@ func (db *DB) GetItemsByBatchID(batchID int64) ([]models.Item, error) {
 	var items []models.Item
 	for rows.Next() {
 		var item models.Item
-		var dataJSON []byte
 		var errorsJSON []byte
 		err := rows.Scan(
 			&item.ID,
 			&item.BatchID,
 			&item.FileID,
 			&item.RowNumber,
-			&dataJSON,
+			&item.Name,
+			&item.Nominal,
 			&item.ValidationStatus,
 			&errorsJSON,
 			&item.CreatedAt,
@@ -837,10 +902,6 @@ func (db *DB) GetItemsByBatchID(batchID int64) ([]models.Item, error) {
 			return nil, err
 		}
 
-		// Unmarshal JSON
-		if err := json.Unmarshal(dataJSON, &item.Data); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal data: %w", err)
-		}
 		if errorsJSON != nil {
 			if err := json.Unmarshal(errorsJSON, &item.ValidationErrors); err != nil {
 				return nil, fmt.Errorf("failed to unmarshal validation errors: %w", err)

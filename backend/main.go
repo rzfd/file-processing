@@ -107,6 +107,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/upload", s.requestIDMiddleware(s.prometheusMiddleware(s.uploadHandler))).Methods("POST")
 	s.router.HandleFunc("/files", s.requestIDMiddleware(s.prometheusMiddleware(s.listFilesHandler))).Methods("GET")
 	s.router.HandleFunc("/files/{id}", s.requestIDMiddleware(s.prometheusMiddleware(s.getFileStatusHandler))).Methods("GET")
+	s.router.HandleFunc("/scheduled", s.requestIDMiddleware(s.prometheusMiddleware(s.listScheduledFilesHandler))).Methods("GET")
 	s.router.Handle("/metrics", promhttp.Handler())
 }
 
@@ -468,6 +469,50 @@ func (s *Server) listFilesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+// listScheduledFilesHandler handles GET /scheduled
+func (s *Server) listScheduledFilesHandler(w http.ResponseWriter, r *http.Request) {
+	requestID := r.Context().Value("request_id").(string)
+
+	// Get query parameters
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50 // default limit
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	log.Info().
+		Str("request_id", requestID).
+		Int("limit", limit).
+		Msg("List scheduled files request")
+
+	// Get scheduled files
+	files, err := s.db.GetScheduledFiles(limit)
+	if err != nil {
+		log.Error().
+			Str("request_id", requestID).
+			Err(err).
+			Msg("Failed to get scheduled files")
+		http.Error(w, `{"error": "Failed to get scheduled files"}`, http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"count": len(files),
+		"files": files,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", requestID)
+	json.NewEncoder(w).Encode(response)
+
+	log.Info().
+		Str("request_id", requestID).
+		Int("count", len(files)).
+		Msg("List scheduled files completed")
 }
 
 type responseWriter struct {

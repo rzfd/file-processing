@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -106,10 +107,81 @@ func main() {
 
 	log.Info().Msg("Worker service started - waiting for messages from Kafka")
 
+	// Start scheduler for scheduled files
+	go worker.startScheduler()
+
 	// Start consuming messages
 	err = kafkaConsumer.ConsumeMessages(worker.processFile)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error consuming messages")
+	}
+}
+
+// startScheduler starts a background scheduler that checks for scheduled files
+func (w *Worker) startScheduler() {
+	// Check every 1 minute for scheduled files
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	log.Info().Msg("Scheduler started - checking scheduled files every 1 minute")
+
+	for {
+		select {
+		case <-ticker.C:
+			w.processScheduledFiles()
+		}
+	}
+}
+
+// processScheduledFiles processes files that are scheduled and ready to be processed
+func (w *Worker) processScheduledFiles() {
+	log.Info().Msg("Checking for scheduled files ready to process")
+
+	// Get scheduled files that are ready (status = pending, scheduled_at <= now)
+	files, err := w.db.GetScheduledFiles(100) // Process up to 100 files at a time
+	if err != nil {
+		log.Error().
+			Err(err).
+			Msg("Failed to get scheduled files")
+		return
+	}
+
+	if len(files) == 0 {
+		log.Debug().Msg("No scheduled files ready to process")
+		return
+	}
+
+	log.Info().
+		Int("count", len(files)).
+		Msg("Found scheduled files ready to process")
+
+	// Process each scheduled file
+	for _, file := range files {
+		// Create processing event
+		event := &models.FileProcessingEvent{
+			FileID:     file.ID,
+			FileName:   file.FileName,
+			BucketName: file.BucketName,
+			ObjectName: file.ObjectName,
+			EventType:  "file_scheduled",
+			TraceID:    fmt.Sprintf("scheduler-%d-%d", file.ID, time.Now().UnixNano()),
+		}
+
+		// Process file in goroutine to avoid blocking
+		go func(f models.FileMetadata, e *models.FileProcessingEvent) {
+			log.Info().
+				Int64("file_id", f.ID).
+				Str("filename", f.FileName).
+				Time("scheduled_at", *f.ScheduledAt).
+				Msg("Processing scheduled file")
+
+			if err := w.processFile(e); err != nil {
+				log.Error().
+					Int64("file_id", f.ID).
+					Err(err).
+					Msg("Failed to process scheduled file")
+			}
+		}(file, event)
 	}
 }
 
@@ -421,16 +493,45 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 				return err
 			}
 
-			// Convert records to items
+			// Convert records to items (one item per row with name and nominal columns)
 			items := make([]models.Item, 0, len(batchRecords))
 			for _, record := range batchRecords {
-				items = append(items, models.Item{
+				item := models.Item{
 					BatchID:          batch.ID,
 					FileID:           event.FileID,
 					RowNumber:        record.RowNumber,
-					Data:             record.Data,
 					ValidationStatus: validationNotStartedStatus.Code,
-				})
+				}
+
+				// Extract name and nominal from record data
+				if nameVal, ok := record.Data["name"]; ok {
+					if nameStr, ok := nameVal.(string); ok {
+						item.Name = &nameStr
+					} else {
+						s := fmt.Sprintf("%v", nameVal)
+						item.Name = &s
+					}
+				}
+
+				if nominalVal, ok := record.Data["nominal"]; ok {
+					switch v := nominalVal.(type) {
+					case float64:
+						item.Nominal = &v
+					case int:
+						f := float64(v)
+						item.Nominal = &f
+					case int64:
+						f := float64(v)
+						item.Nominal = &f
+					case string:
+						// Try to parse string as number
+						if num, err := strconv.ParseFloat(v, 64); err == nil {
+							item.Nominal = &num
+						}
+					}
+				}
+
+				items = append(items, item)
 			}
 
 			// Insert items
@@ -529,21 +630,26 @@ func (w *Worker) validateBatchItems(traceID string, batchID int64, items []model
 
 	allSuccess := true
 	hasFailed := false
+	successCount := 0
+	failedCount := 0
+	processedCount := 0
 
 	for _, item := range items {
-		// Validate item (simplified - you can use your existing validation logic)
-		// For now, we'll just check if data exists
+		// Basic validation per item: ensure name is present
 		validationErrors := make(map[string]interface{})
 		isValid := true
-
-		// Basic validation - check if data is not empty
-		if len(item.Data) == 0 {
+		if item.Name == nil || *item.Name == "" {
 			isValid = false
-			validationErrors["data"] = "Item data is empty"
+			validationErrors["name"] = "Name is required"
+		}
+		if item.Nominal == nil || *item.Nominal <= 0 {
+			isValid = false
+			validationErrors["nominal"] = "Nominal must be greater than 0"
 		}
 
 		// Update item validation status
 		if isValid {
+			successCount++
 			if err := w.db.UpdateItemValidationStatus(item.ID, successCode, nil); err != nil {
 				log.Warn().
 					Str("trace_id", traceID).
@@ -554,6 +660,7 @@ func (w *Worker) validateBatchItems(traceID string, batchID int64, items []model
 		} else {
 			hasFailed = true
 			allSuccess = false
+			failedCount++
 			if err := w.db.UpdateItemValidationStatus(item.ID, failedCode, validationErrors); err != nil {
 				log.Warn().
 					Str("trace_id", traceID).
@@ -562,6 +669,7 @@ func (w *Worker) validateBatchItems(traceID string, batchID int64, items []model
 					Msg("Failed to update item validation status to failed")
 			}
 		}
+		processedCount++
 	}
 
 	// Update batch validation status based on items
@@ -578,10 +686,22 @@ func (w *Worker) validateBatchItems(traceID string, batchID int64, items []model
 			Msg("Failed to update batch validation status")
 	}
 
+	// Update batch counters
+	if err := w.db.UpdateBatchCounters(batchID, processedCount, successCount, failedCount); err != nil {
+		log.Warn().
+			Str("trace_id", traceID).
+			Int64("batch_id", batchID).
+			Err(err).
+			Msg("Failed to update batch counters")
+	}
+
 	log.Info().
 		Str("trace_id", traceID).
 		Int64("batch_id", batchID).
 		Str("status", batchStatus).
+		Int("processed", processedCount).
+		Int("success", successCount).
+		Int("failed", failedCount).
 		Bool("all_success", allSuccess).
 		Msg("Batch items validation completed")
 }

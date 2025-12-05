@@ -73,6 +73,9 @@ type Batch struct {
 	FileID           int64      `json:"file_id" db:"file_id"`
 	BatchNumber      int        `json:"batch_number" db:"batch_number"`
 	TotalItems       int        `json:"total_items" db:"total_items"`
+	ItemsProcessed   int        `json:"items_processed" db:"items_processed"`
+	ItemsSuccess     int        `json:"items_success" db:"items_success"`
+	ItemsFailed      int        `json:"items_failed" db:"items_failed"`
 	ValidationStatus string     `json:"validation_status" db:"validation_status_code"`
 	CreatedAt        time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at" db:"updated_at"`
@@ -85,7 +88,8 @@ type Item struct {
 	BatchID          int64                  `json:"batch_id" db:"batch_id"`
 	FileID           int64                  `json:"file_id" db:"file_id"`
 	RowNumber        int                    `json:"row_number" db:"row_number"`
-	Data             map[string]interface{} `json:"data" db:"data"`
+	Name             *string                `json:"name,omitempty" db:"name"`
+	Nominal          *float64               `json:"nominal,omitempty" db:"nominal"`
 	ValidationStatus string                 `json:"validation_status" db:"validation_status_code"`
 	ValidationErrors map[string]interface{} `json:"validation_errors,omitempty" db:"validation_errors"`
 	CreatedAt        time.Time              `json:"created_at" db:"created_at"`
