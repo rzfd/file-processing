@@ -6,10 +6,10 @@ file_metadata_stats:
   query: |
     SELECT 
       COUNT(*) as total_files,
-      SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending_files,
-      SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) as processing_files,
-      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_files,
-      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_files,
+      SUM(CASE WHEN status_code = 'pending' THEN 1 ELSE 0 END) as pending_files,
+      SUM(CASE WHEN status_code = 'processing' THEN 1 ELSE 0 END) as processing_files,
+      SUM(CASE WHEN status_code = 'completed' THEN 1 ELSE 0 END) as completed_files,
+      SUM(CASE WHEN status_code = 'failed' THEN 1 ELSE 0 END) as failed_files,
       COALESCE(SUM(file_size), 0) as total_size_bytes
     FROM file_metadata;
   master: true

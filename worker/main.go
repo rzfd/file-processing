@@ -239,6 +239,8 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			return nil // Skip processing
 		}
 
+		// scheduled_at from database is already converted to UTC in GetFileMetadata
+		// So we can directly compare with time.Now() (which is in UTC)
 		now := time.Now()
 		if fileMetadata.ScheduledAt.After(now) {
 			log.Info().
@@ -254,6 +256,7 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			Str("trace_id", traceID).
 			Int64("file_id", event.FileID).
 			Time("scheduled_at", *fileMetadata.ScheduledAt).
+			Time("now", now).
 			Msg("File scheduled time has arrived, proceeding with processing")
 	}
 

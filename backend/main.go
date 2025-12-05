@@ -21,7 +21,25 @@ import (
 	"github.com/rzfd/file-processing-system/internal/logger"
 	"github.com/rzfd/file-processing-system/internal/minio"
 	"github.com/rzfd/file-processing-system/internal/models"
+
+	_ "github.com/rzfd/file-processing-system/docs" // swagger docs
+	httpSwagger "github.com/swaggo/http-swagger"
 )
+
+// @title File Processing System API
+// @version 1.0
+// @description API for file processing system with batch and item management
+// @termsOfService http://swagger.io/terms/
+
+// @contact.name API Support
+// @contact.email support@fileprocessing.com
+
+// @license.name Apache 2.0
+// @license.url http://www.apache.org/licenses/LICENSE-2.0.html
+
+// @host localhost:8080
+// @BasePath /
+// @schemes http
 
 var (
 	httpRequestsTotal = prometheus.NewCounterVec(
@@ -109,6 +127,9 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/files/{id}", s.requestIDMiddleware(s.prometheusMiddleware(s.getFileStatusHandler))).Methods("GET")
 	s.router.HandleFunc("/scheduled", s.requestIDMiddleware(s.prometheusMiddleware(s.listScheduledFilesHandler))).Methods("GET")
 	s.router.Handle("/metrics", promhttp.Handler())
+
+	// Swagger documentation
+	s.router.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
 }
 
 // requestIDMiddleware adds request_id to context and response header
@@ -147,6 +168,20 @@ func (s *Server) prometheusMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// uploadHandler handles file upload requests
+// @Summary Upload a file
+// @Description Upload a CSV or XLSX file for processing. Can be processed immediately or scheduled for later.
+// @Tags files
+// @Accept multipart/form-data
+// @Produce json
+// @Param file formData file true "File to upload"
+// @Param schedule_type formData string false "Schedule type: immediate or scheduled" default(immediate) Enums(immediate, scheduled)
+// @Param scheduled_at formData string false "Scheduled time in RFC3339 format (e.g., 2025-12-05T15:00:00Z). Required if schedule_type=scheduled, must be in the future"
+// @Success 200 {object} map[string]interface{} "id, file_name, status, schedule_type, scheduled_at"
+// @Failure 400 {string} string "Bad request"
+// @Failure 409 {string} string "File with this name already exists"
+// @Failure 500 {string} string "Internal server error"
+// @Router /upload [post]
 func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 	// Get request ID from context
 	requestID, _ := r.Context().Value("request_id").(string)
@@ -265,6 +300,54 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		Str("object", objectName).
 		Msg("Successfully uploaded to MinIO")
 
+	// Get schedule parameters
+	scheduleType := r.FormValue("schedule_type")
+	if scheduleType == "" {
+		scheduleType = "immediate" // default
+	}
+
+	// Validate schedule_type
+	if scheduleType != "immediate" && scheduleType != "scheduled" {
+		log.Warn().
+			Str("request_id", requestID).
+			Str("schedule_type", scheduleType).
+			Msg("Invalid schedule_type")
+		http.Error(w, "Invalid schedule_type. Must be 'immediate' or 'scheduled'", http.StatusBadRequest)
+		return
+	}
+
+	var scheduledAt *time.Time
+	if scheduleType == "scheduled" {
+		scheduledAtStr := r.FormValue("scheduled_at")
+		if scheduledAtStr == "" {
+			log.Warn().
+				Str("request_id", requestID).
+				Msg("scheduled_at is required when schedule_type is 'scheduled'")
+			http.Error(w, "scheduled_at is required when schedule_type is 'scheduled'", http.StatusBadRequest)
+			return
+		}
+		parsedTime, err := time.Parse(time.RFC3339, scheduledAtStr)
+		if err != nil {
+			log.Warn().
+				Str("request_id", requestID).
+				Str("scheduled_at", scheduledAtStr).
+				Err(err).
+				Msg("Invalid scheduled_at format")
+			http.Error(w, "Invalid scheduled_at format. Use RFC3339 (e.g., 2025-12-05T15:00:00Z)", http.StatusBadRequest)
+			return
+		}
+		// Validate that scheduled_at is in the future
+		if parsedTime.Before(time.Now()) {
+			log.Warn().
+				Str("request_id", requestID).
+				Time("scheduled_at", parsedTime).
+				Msg("scheduled_at must be in the future")
+			http.Error(w, "scheduled_at must be in the future", http.StatusBadRequest)
+			return
+		}
+		scheduledAt = &parsedTime
+	}
+
 	// Get pending status code from database
 	pendingStatus, err := s.db.GetStatusByCode("pending")
 	if err != nil {
@@ -278,12 +361,14 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Save metadata to PostgreSQL
 	fileMetadata := &models.FileMetadata{
-		FileName:    header.Filename,
-		FileSize:    header.Size,
-		ContentType: header.Header.Get("Content-Type"),
-		BucketName:  s.config.MinIOBucketName,
-		ObjectName:  objectName,
-		Status:      pendingStatus.Code,
+		FileName:     header.Filename,
+		FileSize:     header.Size,
+		ContentType:  header.Header.Get("Content-Type"),
+		BucketName:   s.config.MinIOBucketName,
+		ObjectName:   objectName,
+		Status:       pendingStatus.Code,
+		ScheduleType: scheduleType,
+		ScheduledAt:  scheduledAt,
 	}
 
 	log.Info().
@@ -346,10 +431,30 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"id": %d, "file_name": "%s", "status": "%s"}`,
-		fileMetadata.ID, fileMetadata.FileName, fileMetadata.Status)
+
+	// Build response with schedule info
+	response := map[string]interface{}{
+		"id":            fileMetadata.ID,
+		"file_name":     fileMetadata.FileName,
+		"status":        fileMetadata.Status,
+		"schedule_type": fileMetadata.ScheduleType,
+	}
+	if fileMetadata.ScheduledAt != nil {
+		response["scheduled_at"] = fileMetadata.ScheduledAt.Format(time.RFC3339)
+	}
+	json.NewEncoder(w).Encode(response)
 }
 
+// getFileStatusHandler handles get file status requests
+// @Summary Get file status
+// @Description Get the processing status and details of a file
+// @Tags files
+// @Produce json
+// @Param id path string true "File ID"
+// @Success 200 {object} models.FileMetadata
+// @Failure 404 {string} string "File not found"
+// @Failure 500 {string} string "Internal server error"
+// @Router /files/{id} [get]
 func (s *Server) getFileStatusHandler(w http.ResponseWriter, r *http.Request) {
 	requestID, _ := r.Context().Value("request_id").(string)
 	vars := mux.Vars(r)
@@ -420,6 +525,14 @@ func (s *Server) getFileStatusHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// listFilesHandler handles list files requests
+// @Summary List all files
+// @Description Get a list of all uploaded files
+// @Tags files
+// @Produce json
+// @Success 200 {object} map[string]interface{} "files, count"
+// @Failure 500 {string} string "Internal server error"
+// @Router /files [get]
 func (s *Server) listFilesHandler(w http.ResponseWriter, r *http.Request) {
 	requestID, _ := r.Context().Value("request_id").(string)
 
@@ -472,6 +585,14 @@ func (s *Server) listFilesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // listScheduledFilesHandler handles GET /scheduled
+// @Summary List scheduled files
+// @Description Get a list of files that are scheduled for processing
+// @Tags files
+// @Produce json
+// @Param limit query int false "Limit number of results" default(50)
+// @Success 200 {object} map[string]interface{} "files, count"
+// @Failure 500 {string} string "Internal server error"
+// @Router /scheduled [get]
 func (s *Server) listScheduledFilesHandler(w http.ResponseWriter, r *http.Request) {
 	requestID := r.Context().Value("request_id").(string)
 

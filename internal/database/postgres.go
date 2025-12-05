@@ -38,6 +38,11 @@ func NewDB(cfg *config.Config) (*DB, error) {
 	}
 	log.Info().Msg("Database connection established successfully")
 
+	// Set timezone for this connection (for existing databases)
+	if _, err := conn.Exec("SET timezone = 'Asia/Jakarta'"); err != nil {
+		log.Warn().Err(err).Msg("Failed to set timezone, using database default")
+	}
+
 	db := &DB{
 		conn:          conn,
 		statusCache:   make(map[string]*models.StatusType),
@@ -313,8 +318,12 @@ func (db *DB) BatchInsertProcessedRecords(fileID int64, records []models.Process
 
 // GetFileMetadata retrieves file metadata by ID
 func (db *DB) GetFileMetadata(fileID string) (*models.FileMetadata, error) {
+	// Convert scheduled_at from Asia/Jakarta to UTC for proper comparison
+	// scheduled_at is stored as timestamp without timezone, interpreted as Asia/Jakarta
 	query := `SELECT id, file_name, file_size, content_type, bucket_name, object_name, 
-		status_code, schedule_type_code, scheduled_at, created_at, updated_at, processed_at 
+		status_code, schedule_type_code, 
+		COALESCE((scheduled_at AT TIME ZONE 'Asia/Jakarta' AT TIME ZONE 'UTC')::timestamp, NULL), 
+		created_at, updated_at, processed_at 
 		FROM file_metadata WHERE id = $1`
 
 	var file models.FileMetadata
@@ -612,8 +621,12 @@ func (db *DB) GetAllSchedules() ([]*models.ScheduleType, error) {
 
 // GetScheduledFiles retrieves files that are scheduled and ready to process
 func (db *DB) GetScheduledFiles(limit int) ([]models.FileMetadata, error) {
+	// Convert scheduled_at from Asia/Jakarta to UTC for proper comparison
+	// scheduled_at is stored as timestamp without timezone, interpreted as Asia/Jakarta
 	query := `SELECT id, file_name, file_size, content_type, bucket_name, object_name, 
-		status_code, schedule_type_code, scheduled_at, created_at, updated_at, processed_at 
+		status_code, schedule_type_code, 
+		(scheduled_at AT TIME ZONE 'Asia/Jakarta' AT TIME ZONE 'UTC')::timestamp, 
+		created_at, updated_at, processed_at 
 		FROM file_metadata 
 		WHERE schedule_type_code = 'scheduled' 
 		AND status_code = 'pending'

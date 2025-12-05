@@ -1,0 +1,163 @@
+basePath: /
+definitions:
+  models.FileMetadata:
+    properties:
+      bucket_name:
+        type: string
+      content_type:
+        type: string
+      created_at:
+        type: string
+      file_name:
+        type: string
+      file_size:
+        type: integer
+      id:
+        type: integer
+      object_name:
+        type: string
+      processed_at:
+        type: string
+      schedule_type:
+        type: string
+      scheduled_at:
+        type: string
+      status:
+        description: Changed to status_code
+        type: string
+      updated_at:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@fileprocessing.com
+    name: API Support
+  description: API for file processing system with batch and item management
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: File Processing System API
+  version: "1.0"
+paths:
+  /files:
+    get:
+      description: Get a list of all uploaded files
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: files, count
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      summary: List all files
+      tags:
+      - files
+  /files/{id}:
+    get:
+      description: Get the processing status and details of a file
+      parameters:
+      - description: File ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.FileMetadata'
+        "404":
+          description: File not found
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      summary: Get file status
+      tags:
+      - files
+  /scheduled:
+    get:
+      description: Get a list of files that are scheduled for processing
+      parameters:
+      - default: 50
+        description: Limit number of results
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: files, count
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      summary: List scheduled files
+      tags:
+      - files
+  /upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: Upload a CSV or XLSX file for processing. Can be processed immediately
+        or scheduled for later.
+      parameters:
+      - description: File to upload
+        in: formData
+        name: file
+        required: true
+        type: file
+      - default: immediate
+        description: 'Schedule type: immediate or scheduled'
+        enum:
+        - immediate
+        - scheduled
+        in: formData
+        name: schedule_type
+        type: string
+      - description: Scheduled time in RFC3339 format (e.g., 2025-12-05T15:00:00Z).
+          Required if schedule_type=scheduled, must be in the future
+        in: formData
+        name: scheduled_at
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: id, file_name, status, schedule_type, scheduled_at
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad request
+          schema:
+            type: string
+        "409":
+          description: File with this name already exists
+          schema:
+            type: string
+        "500":
+          description: Internal server error
+          schema:
+            type: string
+      summary: Upload a file
+      tags:
+      - files
+schemes:
+- http
+swagger: "2.0"
