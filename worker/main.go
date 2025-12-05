@@ -146,18 +146,122 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		Str("object", event.ObjectName).
 		Msg("Processing file")
 
+	// Get file metadata to check schedule
+	fileMetadata, err := w.db.GetFileMetadata(fmt.Sprintf("%d", event.FileID))
+	if err != nil {
+		log.Error().
+			Str("trace_id", traceID).
+			Err(err).
+			Int64("file_id", event.FileID).
+			Msg("Failed to get file metadata")
+		return err
+	}
+
+	// Check if file is scheduled and if it's time to process
+	if fileMetadata.ScheduleType == "scheduled" {
+		if fileMetadata.ScheduledAt == nil {
+			log.Warn().
+				Str("trace_id", traceID).
+				Int64("file_id", event.FileID).
+				Msg("File is scheduled but scheduled_at is not set, skipping")
+			return nil // Skip processing
+		}
+
+		now := time.Now()
+		if fileMetadata.ScheduledAt.After(now) {
+			log.Info().
+				Str("trace_id", traceID).
+				Int64("file_id", event.FileID).
+				Time("scheduled_at", *fileMetadata.ScheduledAt).
+				Time("now", now).
+				Msg("File is scheduled but not yet time to process, skipping")
+			return nil // Skip processing, will be processed later
+		}
+
+		log.Info().
+			Str("trace_id", traceID).
+			Int64("file_id", event.FileID).
+			Time("scheduled_at", *fileMetadata.ScheduledAt).
+			Msg("File scheduled time has arrived, proceeding with processing")
+	}
+
+	// Get status codes from database
+	processingStatus, err := w.db.GetStatusByCode("processing")
+	if err != nil {
+		log.Error().
+			Str("trace_id", traceID).
+			Err(err).
+			Msg("Failed to get processing status")
+		return err
+	}
+
+	failedStatus, err := w.db.GetStatusByCode("failed")
+	if err != nil {
+		log.Error().
+			Str("trace_id", traceID).
+			Err(err).
+			Msg("Failed to get failed status")
+		return err
+	}
+
+	completedStatus, err := w.db.GetStatusByCode("completed")
+	if err != nil {
+		log.Error().
+			Str("trace_id", traceID).
+			Err(err).
+			Msg("Failed to get completed status")
+		return err
+	}
+
+	// Get validation status codes
+	validationNotStartedStatus, err := w.db.GetStatusByCode("validation_not_started")
+	if err != nil {
+		log.Error().
+			Str("trace_id", traceID).
+			Err(err).
+			Msg("Failed to get validation_not_started status")
+		return err
+	}
+
+	validationInProgressStatus, err := w.db.GetStatusByCode("validation_in_progress")
+	if err != nil {
+		log.Error().
+			Str("trace_id", traceID).
+			Err(err).
+			Msg("Failed to get validation_in_progress status")
+		return err
+	}
+
+	validationSuccessStatus, err := w.db.GetStatusByCode("validation_success")
+	if err != nil {
+		log.Error().
+			Str("trace_id", traceID).
+			Err(err).
+			Msg("Failed to get validation_success status")
+		return err
+	}
+
+	validationFailedStatus, err := w.db.GetStatusByCode("validation_failed")
+	if err != nil {
+		log.Error().
+			Str("trace_id", traceID).
+			Err(err).
+			Msg("Failed to get validation_failed status")
+		return err
+	}
+
 	// Update status to processing
 	log.Info().
 		Str("trace_id", traceID).
 		Int64("file_id", event.FileID).
 		Msg("Updating status to 'processing'")
-	if err := w.db.UpdateFileStatus(event.FileID, models.StatusProcessing); err != nil {
+	if err := w.db.UpdateFileStatus(event.FileID, processingStatus.Code); err != nil {
 		log.Error().
 			Str("trace_id", traceID).
 			Err(err).
 			Int64("file_id", event.FileID).
 			Msg("Failed to update status to processing")
-		processedFilesTotal.WithLabelValues("failed").Inc()
+		processedFilesTotal.WithLabelValues(failedStatus.Code).Inc()
 		return err
 	}
 
@@ -175,8 +279,8 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			Err(err).
 			Str("object", event.ObjectName).
 			Msg("Failed to download file from MinIO")
-		w.db.UpdateFileStatus(event.FileID, models.StatusFailed)
-		processedFilesTotal.WithLabelValues("failed").Inc()
+		w.db.UpdateFileStatus(event.FileID, failedStatus.Code)
+		processedFilesTotal.WithLabelValues(failedStatus.Code).Inc()
 		return err
 	}
 	defer reader.Close()
@@ -218,8 +322,8 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			Err(err).
 			Str("filename", event.FileName).
 			Msg("Failed to process file")
-		w.db.UpdateFileStatus(event.FileID, models.StatusFailed)
-		processedFilesTotal.WithLabelValues("failed").Inc()
+		w.db.UpdateFileStatus(event.FileID, failedStatus.Code)
+		processedFilesTotal.WithLabelValues(failedStatus.Code).Inc()
 		return err
 	}
 
@@ -261,8 +365,8 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 				Msg("Validation error")
 		}
 
-		w.db.UpdateFileStatus(event.FileID, models.StatusFailed)
-		processedFilesTotal.WithLabelValues("failed").Inc()
+		w.db.UpdateFileStatus(event.FileID, failedStatus.Code)
+		processedFilesTotal.WithLabelValues(failedStatus.Code).Inc()
 		return fmt.Errorf("validation failed: %d errors out of %d records", len(validationErrors), len(records))
 	}
 
@@ -271,7 +375,7 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		Int("record_count", len(records)).
 		Msg("All records passed validation")
 
-	// Batch insert records
+	// Create batches and items
 	if len(records) > 0 {
 		// Process in batches
 		batchSize := w.config.BatchSize
@@ -281,7 +385,7 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			Int("total_records", len(records)).
 			Int("total_batches", totalBatches).
 			Int("batch_size", batchSize).
-			Msg("Starting batch insert")
+			Msg("Starting batch and items creation")
 
 		for i := 0; i < len(records); i += batchSize {
 			end := i + batchSize
@@ -290,35 +394,95 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			}
 
 			batchNum := (i / batchSize) + 1
-			batch := records[i:end]
+			batchRecords := records[i:end]
+
+			// Create batch
+			batch := &models.Batch{
+				FileID:           event.FileID,
+				BatchNumber:      batchNum,
+				TotalItems:       len(batchRecords),
+				ValidationStatus: validationNotStartedStatus.Code,
+			}
 
 			log.Info().
 				Str("trace_id", traceID).
 				Int("batch_num", batchNum).
 				Int("total_batches", totalBatches).
-				Int("batch_records", len(batch)).
-				Msg("Inserting batch")
-			if err := w.db.BatchInsertProcessedRecords(event.FileID, batch); err != nil {
+				Int("batch_records", len(batchRecords)).
+				Msg("Creating batch")
+			if err := w.db.CreateBatch(batch); err != nil {
 				log.Error().
 					Str("trace_id", traceID).
 					Err(err).
 					Int("batch_num", batchNum).
-					Msg("Failed to insert batch")
-				w.db.UpdateFileStatus(event.FileID, models.StatusFailed)
-				processedFilesTotal.WithLabelValues("failed").Inc()
+					Msg("Failed to create batch")
+				w.db.UpdateFileStatus(event.FileID, failedStatus.Code)
+				processedFilesTotal.WithLabelValues(failedStatus.Code).Inc()
 				return err
 			}
 
-			processedRecordsTotal.Add(float64(len(batch)))
+			// Convert records to items
+			items := make([]models.Item, 0, len(batchRecords))
+			for _, record := range batchRecords {
+				items = append(items, models.Item{
+					BatchID:          batch.ID,
+					FileID:           event.FileID,
+					RowNumber:        record.RowNumber,
+					Data:             record.Data,
+					ValidationStatus: validationNotStartedStatus.Code,
+				})
+			}
+
+			// Insert items
 			log.Info().
 				Str("trace_id", traceID).
+				Int64("batch_id", batch.ID).
+				Int("item_count", len(items)).
+				Msg("Inserting items")
+			if err := w.db.BatchInsertItems(batch.ID, event.FileID, items); err != nil {
+				log.Error().
+					Str("trace_id", traceID).
+					Err(err).
+					Int64("batch_id", batch.ID).
+					Msg("Failed to insert items")
+				w.db.UpdateFileStatus(event.FileID, failedStatus.Code)
+				processedFilesTotal.WithLabelValues(failedStatus.Code).Inc()
+				return err
+			}
+
+			// Update batch validation status to in progress
+			if err := w.db.UpdateBatchValidationStatus(batch.ID, validationInProgressStatus.Code); err != nil {
+				log.Warn().
+					Str("trace_id", traceID).
+					Err(err).
+					Int64("batch_id", batch.ID).
+					Msg("Failed to update batch validation status")
+			}
+
+			// Get items after insert to get their IDs
+			insertedItems, err := w.db.GetItemsByBatchID(batch.ID)
+			if err != nil {
+				log.Warn().
+					Str("trace_id", traceID).
+					Int64("batch_id", batch.ID).
+					Err(err).
+					Msg("Failed to get inserted items, skipping validation")
+			} else {
+				// Validate items in batch
+				w.validateBatchItems(traceID, batch.ID, insertedItems, validationInProgressStatus.Code, validationSuccessStatus.Code, validationFailedStatus.Code)
+			}
+
+			processedRecordsTotal.Add(float64(len(batchRecords)))
+			log.Info().
+				Str("trace_id", traceID).
+				Int64("batch_id", batch.ID).
 				Int("batch_num", batchNum).
 				Int("total_batches", totalBatches).
-				Msg("Batch inserted successfully")
+				Msg("Batch and items created successfully")
 		}
 		log.Info().
 			Str("trace_id", traceID).
-			Msg("All batches inserted successfully")
+			Msg("All batches and items created successfully")
 	} else {
 		log.Warn().
 			Str("trace_id", traceID).
@@ -330,13 +494,13 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		Str("trace_id", traceID).
 		Int64("file_id", event.FileID).
 		Msg("Updating status to 'completed'")
-	if err := w.db.UpdateFileStatusWithProcessedAt(event.FileID, models.StatusCompleted); err != nil {
+	if err := w.db.UpdateFileStatusWithProcessedAt(event.FileID, completedStatus.Code); err != nil {
 		log.Error().
 			Str("trace_id", traceID).
 			Err(err).
 			Int64("file_id", event.FileID).
 			Msg("Failed to update status to completed")
-		processedFilesTotal.WithLabelValues("failed").Inc()
+		processedFilesTotal.WithLabelValues(failedStatus.Code).Inc()
 		return err
 	}
 
@@ -345,14 +509,81 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		Int64("file_id", event.FileID).
 		Str("filename", event.FileName).
 		Int("records", len(records)).
-		Str("status", "completed").
+		Str("status", completedStatus.Code).
 		Msg("✅ File processed successfully")
 	log.Info().
 		Str("trace_id", traceID).
 		Msg("========================================")
 
-	processedFilesTotal.WithLabelValues("completed").Inc()
+	processedFilesTotal.WithLabelValues(completedStatus.Code).Inc()
 	return nil
+}
+
+// validateBatchItems validates items in a batch and updates their validation status
+func (w *Worker) validateBatchItems(traceID string, batchID int64, items []models.Item, inProgressCode, successCode, failedCode string) {
+	log.Info().
+		Str("trace_id", traceID).
+		Int64("batch_id", batchID).
+		Int("item_count", len(items)).
+		Msg("Starting batch items validation")
+
+	allSuccess := true
+	hasFailed := false
+
+	for _, item := range items {
+		// Validate item (simplified - you can use your existing validation logic)
+		// For now, we'll just check if data exists
+		validationErrors := make(map[string]interface{})
+		isValid := true
+
+		// Basic validation - check if data is not empty
+		if len(item.Data) == 0 {
+			isValid = false
+			validationErrors["data"] = "Item data is empty"
+		}
+
+		// Update item validation status
+		if isValid {
+			if err := w.db.UpdateItemValidationStatus(item.ID, successCode, nil); err != nil {
+				log.Warn().
+					Str("trace_id", traceID).
+					Int64("item_id", item.ID).
+					Err(err).
+					Msg("Failed to update item validation status to success")
+			}
+		} else {
+			hasFailed = true
+			allSuccess = false
+			if err := w.db.UpdateItemValidationStatus(item.ID, failedCode, validationErrors); err != nil {
+				log.Warn().
+					Str("trace_id", traceID).
+					Int64("item_id", item.ID).
+					Err(err).
+					Msg("Failed to update item validation status to failed")
+			}
+		}
+	}
+
+	// Update batch validation status based on items
+	batchStatus := successCode
+	if hasFailed {
+		batchStatus = failedCode
+	}
+
+	if err := w.db.UpdateBatchValidationStatus(batchID, batchStatus); err != nil {
+		log.Warn().
+			Str("trace_id", traceID).
+			Int64("batch_id", batchID).
+			Err(err).
+			Msg("Failed to update batch validation status")
+	}
+
+	log.Info().
+		Str("trace_id", traceID).
+		Int64("batch_id", batchID).
+		Str("status", batchStatus).
+		Bool("all_success", allSuccess).
+		Msg("Batch items validation completed")
 }
 
 // validateRecords validates all records using validation rules

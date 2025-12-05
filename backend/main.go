@@ -264,6 +264,17 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		Str("object", objectName).
 		Msg("Successfully uploaded to MinIO")
 
+	// Get pending status code from database
+	pendingStatus, err := s.db.GetStatusByCode("pending")
+	if err != nil {
+		log.Error().
+			Str("request_id", requestID).
+			Err(err).
+			Msg("Failed to get pending status")
+		http.Error(w, "Failed to get status", http.StatusInternalServerError)
+		return
+	}
+
 	// Save metadata to PostgreSQL
 	fileMetadata := &models.FileMetadata{
 		FileName:    header.Filename,
@@ -271,7 +282,7 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		ContentType: header.Header.Get("Content-Type"),
 		BucketName:  s.config.MinIOBucketName,
 		ObjectName:  objectName,
-		Status:      models.StatusPending,
+		Status:      pendingStatus.Code,
 	}
 
 	log.Info().
@@ -360,9 +371,20 @@ func (s *Server) getFileStatusHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get completed status code
+	completedStatus, err := s.db.GetStatusByCode("completed")
+	if err != nil {
+		log.Error().
+			Str("request_id", requestID).
+			Err(err).
+			Msg("Failed to get completed status")
+		http.Error(w, "Failed to get status", http.StatusInternalServerError)
+		return
+	}
+
 	// Get record count if completed
 	var recordCount int64
-	if fileMetadata.Status == models.StatusCompleted {
+	if fileMetadata.Status == completedStatus.Code {
 		recordCount, _ = s.db.GetRecordCount(fileMetadata.ID)
 	}
 
