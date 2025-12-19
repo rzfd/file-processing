@@ -20,7 +20,7 @@ Sistem microservices untuk memproses file CSV/XLSX dengan arsitektur event-drive
 - ✅ Structured logging dengan Zerolog (JSON format)
 - ✅ Monitoring dengan Prometheus & Grafana
 - ✅ Centralized logging dengan Loki & Fluent Bit
-- ✅ Distributed tracing dengan trace_id
+- ✅ Distributed tracing dengan Jaeger (OpenTelemetry)
 
 ## 🏗️ Arsitektur
 
@@ -65,6 +65,7 @@ Sistem microservices untuk memproses file CSV/XLSX dengan arsitektur event-drive
 | **Message Broker** | Apache Kafka |
 | **Monitoring** | Prometheus + Grafana |
 | **Logging** | Loki + Fluent Bit |
+| **Tracing** | Jaeger + OpenTelemetry |
 | **Container** | Docker Compose |
 
 ## 🚀 Quick Start
@@ -85,7 +86,9 @@ docker-compose up -d
 | Service | URL | Credentials |
 |---------|-----|-------------|
 | **Backend API** | http://localhost:8080 | - |
+| **Swagger UI** | http://localhost:8080/swagger/index.html | - |
 | **Grafana** | http://localhost:3000 | admin/admin |
+| **Jaeger UI** | http://localhost:16686 | - |
 | **pgAdmin** | http://localhost:5050 | admin@admin.com/admin |
 | **MinIO Console** | http://localhost:9001 | minioadmin/minioadmin |
 | **Prometheus** | http://localhost:9090 | - |
@@ -174,6 +177,40 @@ Query examples dengan LogQL:
 | `processed_files_total` | Total files processed |
 | `processed_records_total` | Total records processed |
 | `file_processing_duration_seconds` | Processing duration |
+
+### Jaeger Distributed Tracing (http://localhost:16686)
+
+**Fitur Tracing:**
+- 🔍 End-to-end request tracing dari API hingga worker
+- ⏱️ Latency breakdown per operation (upload, download, parse, validate)
+- 🔗 Service dependency visualization
+- 🎯 Error tracking dengan context lengkap
+
+**Cara Menggunakan:**
+
+1. **Search Traces:**
+   - Service: `file-processing-backend` atau `file-processing-worker`
+   - Operation: `upload_file`, `process_file`, `minio_upload`, dll
+   - Tags: `file.id`, `file.name`, `request_id`
+
+2. **Trace Timeline:**
+   - Melihat durasi setiap span
+   - Parent-child relationship antar operasi
+   - Attributes dan events detail
+
+3. **Service Graph:**
+   - Visualisasi alur: Backend → Kafka → Worker
+   - Request rate dan latency per service
+
+**Key Spans:**
+- `upload_file` - Full API upload request
+- `minio_upload` - Upload file ke MinIO
+- `kafka_publish` - Publish event ke Kafka
+- `process_file` - Full worker processing
+- `minio_download` - Download dari MinIO
+- `parse_file` - Parse CSV/XLSX
+- `validate_records` - Validasi data
+- `process_batches` - Batch processing
 
 ## 🔧 Troubleshooting
 

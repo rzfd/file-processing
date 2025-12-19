@@ -22,9 +22,12 @@ import (
 	"github.com/rzfd/file-processing-system/internal/logger"
 	"github.com/rzfd/file-processing-system/internal/minio"
 	"github.com/rzfd/file-processing-system/internal/models"
+	"github.com/rzfd/file-processing-system/internal/tracing"
 
 	_ "github.com/rzfd/file-processing-system/docs" // swagger docs
 	httpSwagger "github.com/swaggo/http-swagger"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // @title File Processing System API
@@ -81,6 +84,17 @@ func main() {
 
 	log.Info().Msg("🚀 Starting Backend Service")
 
+	// Initialize Jaeger tracer
+	shutdownTracer, err := tracing.InitTracer(cfg, "file-processing-backend")
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize tracer")
+	}
+	defer func() {
+		if err := shutdownTracer(context.Background()); err != nil {
+			log.Error().Err(err).Msg("Failed to shutdown tracer")
+		}
+	}()
+
 	db, err := database.NewDB(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize database")
@@ -108,6 +122,11 @@ func main() {
 
 	server.setupRoutes()
 
+	// Wrap router with OpenTelemetry HTTP instrumentation
+	otelHandler := otelhttp.NewHandler(server.router, "file-processing-backend",
+		otelhttp.WithMessageEvents(otelhttp.ReadEvents, otelhttp.WriteEvents),
+	)
+
 	go func() {
 		metricsMux := http.NewServeMux()
 		metricsMux.Handle("/metrics", promhttp.Handler())
@@ -118,7 +137,7 @@ func main() {
 	}()
 
 	log.Info().Str("port", cfg.ServerPort).Msg("Backend server starting")
-	log.Fatal().Err(http.ListenAndServe(":"+cfg.ServerPort, server.router)).Msg("Server stopped")
+	log.Fatal().Err(http.ListenAndServe(":"+cfg.ServerPort, otelHandler)).Msg("Server stopped")
 }
 
 func (s *Server) setupRoutes() {
@@ -185,11 +204,26 @@ func (s *Server) prometheusMiddleware(next http.HandlerFunc) http.HandlerFunc {
 // @Failure 500 {string} string "Internal server error"
 // @Router /upload [post]
 func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
+	// Start tracing span for upload operation
+	ctx, span := tracing.StartSpan(r.Context(), "upload_file")
+	defer span.End()
+
 	// Get request ID from context
 	requestID, _ := r.Context().Value("request_id").(string)
 
+	// Add tracing attributes
+	traceID := tracing.TraceIDFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("request_id", requestID),
+		attribute.String("trace_id", traceID),
+		attribute.String("http.method", r.Method),
+		attribute.String("http.path", r.URL.Path),
+		attribute.String("remote_addr", r.RemoteAddr),
+	)
+
 	log.Info().
 		Str("request_id", requestID).
+		Str("trace_id", traceID).
 		Str("remote_addr", r.RemoteAddr).
 		Str("method", r.Method).
 		Msg("New upload request")
@@ -221,6 +255,12 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		Str("filename", header.Filename).
 		Int64("size", header.Size).
 		Msg("File received")
+
+	// Add file attributes to span
+	span.SetAttributes(
+		attribute.String("file.name", header.Filename),
+		attribute.Int64("file.size", header.Size),
+	)
 
 	// Validate file extension
 	ext := strings.ToLower(filepath.Ext(header.Filename))
@@ -281,19 +321,30 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		Msg("Generated object name")
 
 	// Upload to MinIO
-	ctx := r.Context()
 	log.Info().
 		Str("request_id", requestID).
 		Str("bucket", s.config.MinIOBucketName).
 		Str("object", objectName).
 		Msg("Uploading to MinIO")
+
+	// Create child span for MinIO upload
+	_, minioSpan := tracing.StartSpan(ctx, "minio_upload")
+	minioSpan.SetAttributes(
+		attribute.String("minio.object", objectName),
+		attribute.String("minio.bucket", s.config.MinIOBucketName),
+		attribute.Int64("minio.size", header.Size),
+	)
 	err = s.minio.UploadFile(ctx, objectName, file, header.Size, header.Header.Get("Content-Type"))
+	minioSpan.End()
+
 	if err != nil {
 		log.Error().
 			Str("request_id", requestID).
 			Err(err).
 			Str("object", objectName).
 			Msg("Failed to upload file to MinIO")
+		span.RecordError(err)
+		span.SetAttributes(attribute.Bool("error", true))
 		http.Error(w, "Failed to upload file", http.StatusInternalServerError)
 		return
 	}
@@ -392,6 +443,12 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		Str("filename", fileMetadata.FileName).
 		Msg("Metadata saved successfully")
 
+	// Get traceID from span context for distributed tracing
+	traceID = tracing.TraceIDFromContext(ctx)
+	if traceID == "" {
+		traceID = requestID // fallback to request_id
+	}
+
 	// Publish event to Kafka with trace information
 	event := &models.FileProcessingEvent{
 		FileID:     fileMetadata.ID,
@@ -400,22 +457,33 @@ func (s *Server) uploadHandler(w http.ResponseWriter, r *http.Request) {
 		ObjectName: fileMetadata.ObjectName,
 		EventType:  "file_uploaded",
 		RequestID:  requestID,
-		TraceID:    requestID, // Use request_id as trace_id for end-to-end tracing
+		TraceID:    traceID, // Use OpenTelemetry trace_id for distributed tracing
 	}
 
 	log.Info().
 		Str("request_id", requestID).
-		Str("trace_id", requestID).
+		Str("trace_id", traceID).
 		Int64("file_id", event.FileID).
 		Str("filename", event.FileName).
 		Msg("Publishing event to Kafka")
+
+	// Create child span for Kafka publish
+	_, kafkaSpan := tracing.StartSpan(ctx, "kafka_publish")
+	kafkaSpan.SetAttributes(
+		attribute.String("kafka.topic", s.config.KafkaTopic),
+		attribute.Int64("kafka.file_id", event.FileID),
+		attribute.String("kafka.event_type", event.EventType),
+	)
 	err = s.kafka.PublishFileEvent(event)
+	kafkaSpan.End()
+
 	if err != nil {
 		log.Error().
 			Str("request_id", requestID).
 			Err(err).
 			Int64("file_id", event.FileID).
 			Msg("Failed to publish event to Kafka")
+		span.RecordError(err)
 		// Don't fail the request, just log the error
 	} else {
 		log.Info().

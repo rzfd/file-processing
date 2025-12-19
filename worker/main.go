@@ -20,7 +20,10 @@ import (
 	"github.com/rzfd/file-processing-system/internal/models"
 	"github.com/rzfd/file-processing-system/internal/pdf"
 	"github.com/rzfd/file-processing-system/internal/processor"
+	"github.com/rzfd/file-processing-system/internal/tracing"
 	"github.com/rzfd/file-processing-system/internal/validator"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 var (
@@ -68,6 +71,17 @@ func main() {
 	cfg := config.LoadConfig()
 
 	log.Info().Msg("🔧 Starting Worker Service")
+
+	// Initialize Jaeger tracer
+	shutdownTracer, err := tracing.InitTracer(cfg, "file-processing-worker")
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize tracer")
+	}
+	defer func() {
+		if err := shutdownTracer(context.Background()); err != nil {
+			log.Error().Err(err).Msg("Failed to shutdown tracer")
+		}
+	}()
 
 	// Initialize database
 	db, err := database.NewDB(cfg)
@@ -189,6 +203,11 @@ func (w *Worker) processScheduledFiles() {
 func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 	start := time.Now()
 
+	// Create root span for file processing with trace context from event
+	ctx := context.Background()
+	ctx, span := tracing.StartSpan(ctx, "process_file")
+	defer span.End()
+
 	// Extract trace_id from event for end-to-end tracing
 	traceID := event.TraceID
 	if traceID == "" {
@@ -199,9 +218,21 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		traceID = fmt.Sprintf("file-%d-%d", event.FileID, time.Now().UnixNano())
 	}
 
+	// Add attributes to span
+	span.SetAttributes(
+		attribute.Int64("file.id", event.FileID),
+		attribute.String("file.name", event.FileName),
+		attribute.String("file.bucket", event.BucketName),
+		attribute.String("file.object", event.ObjectName),
+		attribute.String("request_id", event.RequestID),
+		attribute.String("trace_id", traceID),
+		attribute.String("event_type", event.EventType),
+	)
+
 	defer func() {
 		duration := time.Since(start).Seconds()
 		processingDuration.Observe(duration)
+		span.SetAttributes(attribute.Float64("processing.duration_seconds", duration))
 		log.Info().
 			Str("trace_id", traceID).
 			Float64("duration_seconds", duration).
@@ -341,20 +372,29 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		return err
 	}
 
-	ctx := context.Background()
-
 	// Download file from MinIO
 	log.Info().
 		Str("trace_id", traceID).
 		Str("object", event.ObjectName).
 		Msg("Downloading file from MinIO")
+
+	// Create child span for MinIO download
+	_, downloadSpan := tracing.StartSpan(ctx, "minio_download")
+	downloadSpan.SetAttributes(
+		attribute.String("minio.object", event.ObjectName),
+		attribute.String("minio.bucket", event.BucketName),
+	)
 	reader, err := w.minio.DownloadFile(ctx, event.ObjectName)
+	downloadSpan.End()
+
 	if err != nil {
 		log.Error().
 			Str("trace_id", traceID).
 			Err(err).
 			Str("object", event.ObjectName).
 			Msg("Failed to download file from MinIO")
+		span.RecordError(err)
+		span.SetAttributes(attribute.Bool("error", true))
 		w.db.UpdateFileStatus(event.FileID, failedStatus.Code)
 		processedFilesTotal.WithLabelValues(failedStatus.Code).Inc()
 		return err
@@ -371,6 +411,14 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		Str("trace_id", traceID).
 		Str("extension", ext).
 		Msg("Detecting file type")
+
+	// Create child span for file parsing
+	_, parseSpan := tracing.StartSpan(ctx, "parse_file")
+	parseSpan.SetAttributes(
+		attribute.String("file.extension", ext),
+		attribute.String("file.name", event.FileName),
+	)
+
 	var result *models.ProcessingResult
 
 	switch ext {
@@ -391,6 +439,7 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			Str("extension", ext).
 			Msg("Unsupported file type")
 	}
+	parseSpan.End()
 
 	if err != nil {
 		log.Error().
@@ -398,6 +447,8 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			Err(err).
 			Str("filename", event.FileName).
 			Msg("Failed to process file")
+		span.RecordError(err)
+		span.SetAttributes(attribute.Bool("error", true))
 		w.db.UpdateFileStatus(event.FileID, failedStatus.Code)
 		processedFilesTotal.WithLabelValues(failedStatus.Code).Inc()
 		return err
@@ -405,6 +456,9 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 
 	records := result.Records
 	headers := result.Headers
+
+	parseSpan.SetAttributes(attribute.Int("records.count", len(records)))
+	span.SetAttributes(attribute.Int("records.count", len(records)))
 
 	log.Info().
 		Str("trace_id", traceID).
@@ -418,7 +472,16 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 		Int("record_count", len(records)).
 		Msg("Starting record validation")
 
+	// Create child span for validation
+	_, validationSpan := tracing.StartSpan(ctx, "validate_records")
+	validationSpan.SetAttributes(
+		attribute.Int("validation.record_count", len(records)),
+	)
 	validationErrors := w.validateRecords(event.FileID, traceID, headers, records)
+	validationSpan.SetAttributes(
+		attribute.Int("validation.error_count", len(validationErrors)),
+	)
+	validationSpan.End()
 
 	if len(validationErrors) > 0 {
 		log.Error().
@@ -426,6 +489,10 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			Int("error_count", len(validationErrors)).
 			Int("total_records", len(records)).
 			Msg("Validation failed")
+		span.SetAttributes(
+			attribute.Bool("validation.failed", true),
+			attribute.Int("validation.error_count", len(validationErrors)),
+		)
 
 		// Log first few errors for debugging
 		for i, verr := range validationErrors {
@@ -462,6 +529,15 @@ func (w *Worker) processFile(event *models.FileProcessingEvent) error {
 			Int("total_batches", totalBatches).
 			Int("batch_size", batchSize).
 			Msg("Starting batch and items creation")
+
+		// Create child span for batch processing
+		_, batchSpan := tracing.StartSpan(ctx, "process_batches")
+		batchSpan.SetAttributes(
+			attribute.Int("batches.total_records", len(records)),
+			attribute.Int("batches.total_batches", totalBatches),
+			attribute.Int("batches.batch_size", batchSize),
+		)
+		defer batchSpan.End()
 
 		for i := 0; i < len(records); i += batchSize {
 			end := i + batchSize

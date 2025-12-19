@@ -190,6 +190,28 @@ services:
       - prometheus
       - loki
 
+  # Jaeger (Distributed Tracing)
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    container_name: file-processing-jaeger
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4318:4318"    # OTLP HTTP receiver
+      - "14268:14268"  # Jaeger collector HTTP
+      - "14250:14250"  # Jaeger collector gRPC
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      LOG_LEVEL: "info"
+      SPAN_STORAGE_TYPE: "memory"
+    networks:
+      - file-processing-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:14269/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   # Backend Service (Upload API)
   backend:
     build:
@@ -216,6 +238,8 @@ services:
       KAFKA_BROKERS: kafka:9092
       KAFKA_TOPIC: file-processing
       MAX_FILE_SIZE: "10485760"
+      JAEGER_ENDPOINT: jaeger:4318
+      JAEGER_SAMPLING_RATIO: "1.0"
     networks:
       - file-processing-network
     logging:
@@ -265,6 +289,8 @@ services:
       KAFKA_TOPIC: file-processing
       KAFKA_CONSUMER_GROUP: file-worker-group
       BATCH_SIZE: "1000"
+      JAEGER_ENDPOINT: jaeger:4318
+      JAEGER_SAMPLING_RATIO: "1.0"
     networks:
       - file-processing-network
     logging:

@@ -27,17 +27,21 @@ type Config struct {
 	MinIOBucketName      string
 
 	// Kafka
-	KafkaBrokers      []string
-	KafkaTopic        string
+	KafkaBrokers       []string
+	KafkaTopic         string
 	KafkaConsumerGroup string
 
 	// File Processing
-	MaxFileSize      int64
+	MaxFileSize       int64
 	AllowedExtensions []string
-	BatchSize        int
+	BatchSize         int
 
 	// Prometheus
 	MetricsPort string
+
+	// Jaeger Tracing
+	JaegerEndpoint      string
+	JaegerSamplingRatio float64
 }
 
 // LoadConfig loads configuration from environment variables
@@ -45,6 +49,7 @@ func LoadConfig() *Config {
 	minioUseSSL, _ := strconv.ParseBool(getEnv("MINIO_USE_SSL", "false"))
 	maxFileSize, _ := strconv.ParseInt(getEnv("MAX_FILE_SIZE", "10485760"), 10, 64) // 10MB default
 	batchSize, _ := strconv.Atoi(getEnv("BATCH_SIZE", "1000"))
+	jaegerSamplingRatio, _ := strconv.ParseFloat(getEnv("JAEGER_SAMPLING_RATIO", "1.0"), 64)
 
 	return &Config{
 		ServerPort:           getEnv("PORT", "8080"),
@@ -66,6 +71,8 @@ func LoadConfig() *Config {
 		AllowedExtensions:    []string{".csv", ".xlsx", ".xls"},
 		BatchSize:            batchSize,
 		MetricsPort:          getEnv("METRICS_PORT", "2112"),
+		JaegerEndpoint:       getEnv("JAEGER_ENDPOINT", "jaeger:4318"),
+		JaegerSamplingRatio:  jaegerSamplingRatio,
 	}
 }
 
@@ -81,4 +88,3 @@ func getEnv(key, defaultValue string) string {
 	}
 	return defaultValue
 }
-
