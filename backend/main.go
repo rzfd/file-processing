@@ -125,6 +125,12 @@ func main() {
 	// Wrap router with OpenTelemetry HTTP instrumentation
 	otelHandler := otelhttp.NewHandler(server.router, "file-processing-backend",
 		otelhttp.WithMessageEvents(otelhttp.ReadEvents, otelhttp.WriteEvents),
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			if r.URL.Path == "/health" || r.URL.Path == "/metrics" {
+				return false
+			}
+			return true
+		}),
 	)
 
 	go func() {
